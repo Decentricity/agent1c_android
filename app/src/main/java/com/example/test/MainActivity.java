@@ -7,7 +7,6 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.widget.EditText;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -32,10 +31,7 @@ public class MainActivity extends AppCompatActivity {
         authManager = new SupabaseAuthManager(this);
         statusText = findViewById(R.id.statusText);
         authStatusText = findViewById(R.id.authStatusText);
-        EditText emailInput = findViewById(R.id.emailInput);
-        Button googleSignInButton = findViewById(R.id.googleSignInButton);
-        Button xSignInButton = findViewById(R.id.xSignInButton);
-        Button sendMagicLinkButton = findViewById(R.id.sendMagicLinkButton);
+        Button loginButton = findViewById(R.id.loginButton);
         Button signOutButton = findViewById(R.id.signOutButton);
         Button overlayPermissionButton = findViewById(R.id.overlayPermissionButton);
         Button startOverlayButton = findViewById(R.id.startOverlayButton);
@@ -43,24 +39,7 @@ public class MainActivity extends AppCompatActivity {
 
         handleAuthIntent(getIntent());
 
-        googleSignInButton.setOnClickListener(v -> openWebAuth("google"));
-        xSignInButton.setOnClickListener(v -> openWebAuth("x"));
-        sendMagicLinkButton.setOnClickListener(v -> {
-            String email = emailInput.getText().toString().trim();
-            if (email.isEmpty()) {
-                authStatusText.setText("Auth: enter an email for Magic Link");
-                return;
-            }
-            authStatusText.setText("Auth: sending magic link...");
-            new Thread(() -> {
-                try {
-                    authManager.sendMagicLink(email);
-                    runOnUiThread(() -> authStatusText.setText("Auth: magic link sent. Open email on this phone."));
-                } catch (Exception e) {
-                    runOnUiThread(() -> authStatusText.setText("Auth error: " + safeMessage(e)));
-                }
-            }).start();
-        });
+        loginButton.setOnClickListener(v -> openWebAuth());
         signOutButton.setOnClickListener(v -> {
             authManager.signOut();
             refreshAuthStatus();
@@ -119,13 +98,13 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void openWebAuth(String provider) {
+    private void openWebAuth() {
         try {
-            String url = authManager.buildWebAuthLaunchUrl(provider);
-            if (!launchAuthInBrowser(Uri.parse(url), provider)) {
+            String url = authManager.buildWebAuthLaunchUrl(null);
+            if (!launchAuthInBrowser(Uri.parse(url), null)) {
                 throw new IllegalStateException("No browser found for sign-in");
             }
-            authStatusText.setText("Auth: waiting for " + provider + " sign-in...");
+            authStatusText.setText("Auth: waiting for web sign-in...");
         } catch (Exception e) {
             authStatusText.setText("Auth error: " + safeMessage(e));
         }
@@ -134,17 +113,25 @@ public class MainActivity extends AppCompatActivity {
     private boolean launchAuthInBrowser(Uri uri, String provider) {
         try {
             String browserPkg = pickBrowserPackageForOAuth(uri, provider);
-            if (browserPkg == null) return false;
             Intent intent = new Intent(Intent.ACTION_VIEW, uri);
             intent.addCategory(Intent.CATEGORY_BROWSABLE);
-            intent.setPackage(browserPkg);
+            if (browserPkg != null && !browserPkg.isEmpty()) {
+                intent.setPackage(browserPkg);
+            }
             startActivity(intent);
             if ("x".equals(provider)) {
                 authStatusText.setText("Auth: waiting for x sign-in... If X app home opens, use Google/Magic Link or disable 'Open supported links' for X.");
             }
             return true;
         } catch (Exception ignored) {
-            return false;
+            try {
+                Intent fallback = new Intent(Intent.ACTION_VIEW, uri);
+                fallback.addCategory(Intent.CATEGORY_BROWSABLE);
+                startActivity(fallback);
+                return true;
+            } catch (Exception ignoredAgain) {
+                return false;
+            }
         }
     }
 
@@ -152,7 +139,10 @@ public class MainActivity extends AppCompatActivity {
         PackageManager pm = getPackageManager();
         Intent probe = new Intent(Intent.ACTION_VIEW, uri);
         probe.addCategory(Intent.CATEGORY_BROWSABLE);
-        List<ResolveInfo> resolved = pm.queryIntentActivities(probe, PackageManager.MATCH_DEFAULT_ONLY);
+        List<ResolveInfo> resolved = pm.queryIntentActivities(probe, 0);
+        if ((resolved == null || resolved.isEmpty()) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            resolved = pm.queryIntentActivities(probe, PackageManager.MATCH_ALL);
+        }
         if (resolved == null || resolved.isEmpty()) return null;
 
         List<String> blockedPkgs = Arrays.asList(
