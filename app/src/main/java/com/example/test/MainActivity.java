@@ -216,6 +216,8 @@ public class MainActivity extends AppCompatActivity {
                 boolean handled = authManager.handleAuthCallbackUri(data);
                 runOnUiThread(() -> {
                     if (handled) {
+                        Intent current = getIntent();
+                        if (current != null) current.setData(null);
                         refreshAuthStatus();
                         refreshControlVisibility();
                         Toast.makeText(this, "Signed in. You can start Hitomi now.", Toast.LENGTH_SHORT).show();

@@ -36,6 +36,7 @@ public class SupabaseAuthManager {
     private static final String K_PROVIDER = "provider";
     private static final String K_DISPLAY = "display_name";
     private static final String K_OAUTH_CODE_VERIFIER = "oauth_code_verifier";
+    private static final String K_LAST_HANDOFF_CODE = "last_handoff_code";
 
     private final SharedPreferences prefs;
     private final SecureRandom random = new SecureRandom();
@@ -122,7 +123,23 @@ public class SupabaseAuthManager {
         String handoffCode = values.optString("handoff_code", "");
         if (!handoffCode.isEmpty()) {
             Log.d(TAG, "handleAuthCallbackUri using android handoff exchange");
-            exchangeAndroidHandoffCode(handoffCode);
+            String lastHandoff = prefs.getString(K_LAST_HANDOFF_CODE, "");
+            if (handoffCode.equals(lastHandoff)) {
+                Log.d(TAG, "handleAuthCallbackUri duplicate handoff code ignored");
+                return isSignedIn();
+            }
+            try {
+                exchangeAndroidHandoffCode(handoffCode);
+                prefs.edit().putString(K_LAST_HANDOFF_CODE, handoffCode).apply();
+            } catch (Exception e) {
+                String msg = e.getMessage();
+                if (msg != null && msg.contains("handoff_not_found") && isSignedIn()) {
+                    Log.d(TAG, "handleAuthCallbackUri handoff_not_found after sign-in; treating as duplicate success");
+                    prefs.edit().putString(K_LAST_HANDOFF_CODE, handoffCode).apply();
+                    return true;
+                }
+                throw e;
+            }
             return true;
         }
 
@@ -204,6 +221,7 @@ public class SupabaseAuthManager {
             .remove(K_EMAIL)
             .remove(K_PROVIDER)
             .remove(K_DISPLAY)
+            .remove(K_LAST_HANDOFF_CODE)
             .apply();
     }
 
