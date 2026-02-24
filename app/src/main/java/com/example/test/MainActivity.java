@@ -1,7 +1,6 @@
 package ai.agent1c.hitomi;
 
 import android.content.Intent;
-import android.app.PendingIntent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
@@ -16,26 +15,14 @@ import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
-import net.openid.appauth.AuthorizationException;
-import net.openid.appauth.AuthorizationRequest;
-import net.openid.appauth.AuthorizationResponse;
-import net.openid.appauth.AuthorizationService;
-import net.openid.appauth.AuthorizationServiceConfiguration;
-import net.openid.appauth.ResponseTypeValues;
-
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 public class MainActivity extends AppCompatActivity {
-    private static final String ACTION_APPAUTH_COMPLETE = "ai.agent1c.hitomi.APPAUTH_COMPLETE";
-    private static final String ACTION_APPAUTH_CANCEL = "ai.agent1c.hitomi.APPAUTH_CANCEL";
     private TextView statusText;
     private TextView authStatusText;
     private SupabaseAuthManager authManager;
-    private AuthorizationService authorizationService;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,7 +30,6 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         authManager = new SupabaseAuthManager(this);
-        authorizationService = new AuthorizationService(this);
         statusText = findViewById(R.id.statusText);
         authStatusText = findViewById(R.id.authStatusText);
         EditText emailInput = findViewById(R.id.emailInput);
@@ -57,8 +43,8 @@ public class MainActivity extends AppCompatActivity {
 
         handleAuthIntent(getIntent());
 
-        googleSignInButton.setOnClickListener(v -> openAuthUrl("google"));
-        xSignInButton.setOnClickListener(v -> openAuthUrl("x"));
+        googleSignInButton.setOnClickListener(v -> openWebAuth("google"));
+        xSignInButton.setOnClickListener(v -> openWebAuth("x"));
         sendMagicLinkButton.setOnClickListener(v -> {
             String email = emailInput.getText().toString().trim();
             if (email.isEmpty()) {
@@ -116,12 +102,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @Override
-    protected void onDestroy() {
-        if (authorizationService != null) authorizationService.dispose();
-        super.onDestroy();
-    }
-
-    @Override
     protected void onResume() {
         super.onResume();
         boolean allowed = Settings.canDrawOverlays(this);
@@ -139,47 +119,16 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void openAuthUrl(String provider) {
+    private void openWebAuth(String provider) {
         try {
-            launchAuthWithAppAuth(provider);
+            String url = authManager.buildWebAuthLaunchUrl(provider);
+            if (!launchAuthInBrowser(Uri.parse(url), provider)) {
+                throw new IllegalStateException("No browser found for sign-in");
+            }
             authStatusText.setText("Auth: waiting for " + provider + " sign-in...");
         } catch (Exception e) {
             authStatusText.setText("Auth error: " + safeMessage(e));
         }
-    }
-
-    private void launchAuthWithAppAuth(String provider) {
-        String verifier = authManager.preparePkceCodeVerifier();
-        String challenge = SupabaseAuthManager.pkceCodeChallenge(verifier);
-        AuthorizationServiceConfiguration serviceConfig = new AuthorizationServiceConfiguration(
-            Uri.parse(SupabaseAuthManager.SUPABASE_URL + "/auth/v1/authorize"),
-            Uri.parse(SupabaseAuthManager.SUPABASE_URL + "/auth/v1/token")
-        );
-        Map<String, String> params = new HashMap<>();
-        params.put("provider", provider);
-        params.put("redirect_to", SupabaseAuthManager.OAUTH_REDIRECT_URI);
-        params.put("flow_type", "pkce");
-
-        AuthorizationRequest request = new AuthorizationRequest.Builder(
-            serviceConfig,
-            SupabaseAuthManager.SUPABASE_ANON_KEY,
-            ResponseTypeValues.CODE,
-            Uri.parse(SupabaseAuthManager.OAUTH_REDIRECT_URI)
-        )
-            .setCodeVerifier(verifier, challenge, "S256")
-            .setAdditionalParameters(params)
-            .build();
-
-        Intent successIntent = new Intent(this, MainActivity.class)
-            .setAction(ACTION_APPAUTH_COMPLETE)
-            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        Intent cancelIntent = new Intent(this, MainActivity.class)
-            .setAction(ACTION_APPAUTH_CANCEL)
-            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 23 ? PendingIntent.FLAG_IMMUTABLE : 0);
-        PendingIntent success = PendingIntent.getActivity(this, 4001, successIntent, flags);
-        PendingIntent cancel = PendingIntent.getActivity(this, 4002, cancelIntent, flags);
-        authorizationService.performAuthorizationRequest(request, success, cancel);
     }
 
     private boolean launchAuthInBrowser(Uri uri, String provider) {
@@ -257,7 +206,6 @@ public class MainActivity extends AppCompatActivity {
 
     private void handleAuthIntent(Intent intent) {
         if (intent == null) return;
-        if (handleAppAuthResultIntent(intent)) return;
         Uri data = intent.getData();
         if (data == null) return;
         authStatusText.setText("Auth: processing sign-in...");
@@ -276,44 +224,6 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> authStatusText.setText("Auth error: " + safeMessage(e)));
             }
         }).start();
-    }
-
-    private boolean handleAppAuthResultIntent(Intent intent) {
-        AuthorizationException authEx = AuthorizationException.fromIntent(intent);
-        AuthorizationResponse authResp = AuthorizationResponse.fromIntent(intent);
-        String action = intent.getAction();
-        if (authResp == null && authEx == null && !ACTION_APPAUTH_CANCEL.equals(action)) return false;
-
-        if (ACTION_APPAUTH_CANCEL.equals(action)) {
-            authStatusText.setText("Auth: sign-in canceled");
-            return true;
-        }
-        if (authEx != null) {
-            authStatusText.setText("Auth error: " + authEx.getLocalizedMessage());
-            return true;
-        }
-        if (authResp == null) {
-            authStatusText.setText("Auth: callback received but no response");
-            return true;
-        }
-        final String code = authResp.authorizationCode;
-        if (code == null || code.isEmpty()) {
-            authStatusText.setText("Auth: callback received but no code");
-            return true;
-        }
-        authStatusText.setText("Auth: processing sign-in...");
-        new Thread(() -> {
-            try {
-                authManager.completePkceCodeExchange(code);
-                runOnUiThread(() -> {
-                    refreshAuthStatus();
-                    Toast.makeText(this, "Signed in. You can start Hitomi now.", Toast.LENGTH_SHORT).show();
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> authStatusText.setText("Auth error: " + safeMessage(e)));
-            }
-        }).start();
-        return true;
     }
 
     private void refreshAuthStatus() {

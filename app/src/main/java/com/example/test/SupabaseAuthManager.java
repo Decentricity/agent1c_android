@@ -24,6 +24,7 @@ public class SupabaseAuthManager {
     public static final String SUPABASE_URL = "https://gkfhxhrleuauhnuewfmw.supabase.co";
     public static final String SUPABASE_ANON_KEY = "sb_publishable_r_NH0OEY5Y6rNy9rzPu1NQ_PYGZs5Nj";
     public static final String XAI_CHAT_FUNCTION_URL = SUPABASE_URL + "/functions/v1/xai-chat";
+    public static final String ANDROID_AUTH_HANDOFF_FUNCTION_URL = SUPABASE_URL + "/functions/v1/android-auth-handoff";
     public static final String APP_REDIRECT_URI = "agent1cai://auth/callback";
     public static final String OAUTH_REDIRECT_URI = "agent1cai://auth/oauth";
 
@@ -58,6 +59,16 @@ public class SupabaseAuthManager {
         return url;
     }
 
+    public String buildWebAuthLaunchUrl(String provider) {
+        Uri.Builder b = Uri.parse("https://agent1c.ai/").buildUpon();
+        b.appendQueryParameter("android_auth", "1");
+        if (provider != null) {
+            String p = provider.trim().toLowerCase();
+            if (!p.isEmpty()) b.appendQueryParameter("android_provider", p);
+        }
+        return b.build().toString();
+    }
+
     public String preparePkceCodeVerifier() {
         String codeVerifier = randomToken(48);
         prefs.edit().putString(K_OAUTH_CODE_VERIFIER, codeVerifier).apply();
@@ -74,13 +85,8 @@ public class SupabaseAuthManager {
         String refreshToken = exchanged.optString("refresh_token", "");
         long expiresIn = exchanged.optLong("expires_in", 3600L);
         if (accessToken.isEmpty()) throw new IllegalStateException("PKCE code exchange returned no access token");
-        long expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn;
-        prefs.edit()
-            .putString(K_ACCESS, accessToken)
-            .putString(K_REFRESH, refreshToken)
-            .putLong(K_EXPIRES_AT, expiresAt)
-            .remove(K_OAUTH_CODE_VERIFIER)
-            .apply();
+        storeSession(accessToken, refreshToken, expiresIn);
+        prefs.edit().remove(K_OAUTH_CODE_VERIFIER).apply();
         refreshUserProfile();
     }
 
@@ -113,6 +119,13 @@ public class SupabaseAuthManager {
             Log.d(TAG, "handleAuthCallbackUri callback state present (Supabase-managed)");
         }
 
+        String handoffCode = values.optString("handoff_code", "");
+        if (!handoffCode.isEmpty()) {
+            Log.d(TAG, "handleAuthCallbackUri using android handoff exchange");
+            exchangeAndroidHandoffCode(handoffCode);
+            return true;
+        }
+
         String accessToken = values.optString("access_token", "");
         String refreshToken = values.optString("refresh_token", "");
         if (accessToken.isEmpty()) {
@@ -128,13 +141,8 @@ public class SupabaseAuthManager {
         }
 
         long expiresIn = safeLong(values.optString("expires_in", "3600"), 3600L);
-        long expiresAt = (System.currentTimeMillis() / 1000L) + expiresIn;
-        prefs.edit()
-            .putString(K_ACCESS, accessToken)
-            .putString(K_REFRESH, refreshToken)
-            .putLong(K_EXPIRES_AT, expiresAt)
-            .remove(K_OAUTH_CODE_VERIFIER)
-            .apply();
+        storeSession(accessToken, refreshToken, expiresIn);
+        prefs.edit().remove(K_OAUTH_CODE_VERIFIER).apply();
         refreshUserProfile();
         Log.d(TAG, "handleAuthCallbackUri implicit/token callback handled");
         return true;
@@ -235,6 +243,36 @@ public class SupabaseAuthManager {
             .apply();
     }
 
+    public void exchangeAndroidHandoffCode(String handoffCode) throws Exception {
+        JSONObject body = new JSONObject();
+        body.put("action", "exchange");
+        body.put("handoff_code", handoffCode);
+        JSONObject json = requestJson("POST", ANDROID_AUTH_HANDOFF_FUNCTION_URL, body.toString(), null);
+        JSONObject session = json.optJSONObject("session");
+        if (session == null) throw new IllegalStateException("Android handoff exchange returned no session");
+        String accessToken = session.optString("access_token", "");
+        String refreshToken = session.optString("refresh_token", "");
+        long expiresIn = session.optLong("expires_in", 3600L);
+        if (accessToken.isEmpty() || refreshToken.isEmpty()) {
+            throw new IllegalStateException("Android handoff session missing tokens");
+        }
+        storeSession(accessToken, refreshToken, expiresIn);
+
+        JSONObject identity = json.optJSONObject("identity");
+        if (identity != null) {
+            String email = identity.optString("email", "");
+            String provider = identity.optString("provider", "");
+            String handle = identity.optString("handle", "");
+            String display = (!handle.isEmpty()) ? (handle.startsWith("@") ? handle : "@" + handle) : email;
+            prefs.edit()
+                .putString(K_EMAIL, email)
+                .putString(K_PROVIDER, provider)
+                .putString(K_DISPLAY, display)
+                .apply();
+        }
+        try { refreshUserProfile(); } catch (Exception ignored) {}
+    }
+
     private boolean isExpired() {
         long expiresAt = prefs.getLong(K_EXPIRES_AT, 0L);
         if (expiresAt <= 0L) return false;
@@ -291,6 +329,15 @@ public class SupabaseAuthManager {
         body.put("auth_code", code);
         body.put("code_verifier", verifier);
         return requestJson("POST", SUPABASE_URL + "/auth/v1/token?grant_type=pkce", body.toString(), null);
+    }
+
+    private void storeSession(String accessToken, String refreshToken, long expiresIn) {
+        long expiresAt = (System.currentTimeMillis() / 1000L) + Math.max(60L, expiresIn);
+        prefs.edit()
+            .putString(K_ACCESS, accessToken == null ? "" : accessToken)
+            .putString(K_REFRESH, refreshToken == null ? "" : refreshToken)
+            .putLong(K_EXPIRES_AT, expiresAt)
+            .apply();
     }
 
     private String randomToken(int byteCount) {
