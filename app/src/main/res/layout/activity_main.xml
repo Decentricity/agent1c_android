@@ -61,18 +61,10 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Hitomi Android"
+                android:text="Sign in or sign up to Agent1c.ai:"
                 android:textColor="#111111"
                 android:textSize="20sp"
                 android:textStyle="bold" />
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Sign in with your Agent1c.ai account, then start the floating Hitomi overlay. This Android build uses your existing Supabase + xAI cloud chat backend."
-                android:textColor="#222222"
-                android:textSize="13sp" />
 
             <TextView
                 android:id="@+id/authStatusText"
