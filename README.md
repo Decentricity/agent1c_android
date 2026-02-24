@@ -1,5 +1,7 @@
 # Agent1c Android (Hitomi Overlay)
 
+![Hitomi Hedgehog](app/src/main/res/drawable/hedgey1.png)
+
 Native Android floating Hitomi ("talking hedgehog") companion app for the Agent1c ecosystem.
 
 This repo is the Android client prototype / app codebase.
@@ -11,6 +13,7 @@ Related projects:
 ## Download APK (Current)
 
 Release `0.0.1`:
+- Direct APK download: https://github.com/Decentricity/agent1c_android/raw/refs/tags/v0.0.1/releases/0.0.1/agent1c-hitomi-android-v0.0.1-debug.apk
 - `releases/0.0.1/agent1c-hitomi-android-v0.0.1-debug.apk`
 - checksum: `releases/0.0.1/SHA256SUMS.txt`
 - notes: `releases/0.0.1/RELEASE_NOTES.md`
