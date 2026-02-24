@@ -21,21 +21,28 @@ import java.util.List;
 public class MainActivity extends AppCompatActivity {
     private TextView statusText;
     private TextView authStatusText;
+    private TextView loginHintText;
     private SupabaseAuthManager authManager;
+    private Button loginButton;
+    private Button signOutButton;
+    private Button startOverlayButton;
+    private Button stopOverlayButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (getSupportActionBar() != null) getSupportActionBar().hide();
         setContentView(R.layout.activity_main);
 
         authManager = new SupabaseAuthManager(this);
         statusText = findViewById(R.id.statusText);
         authStatusText = findViewById(R.id.authStatusText);
-        Button loginButton = findViewById(R.id.loginButton);
-        Button signOutButton = findViewById(R.id.signOutButton);
+        loginHintText = findViewById(R.id.loginHintText);
+        loginButton = findViewById(R.id.loginButton);
+        signOutButton = findViewById(R.id.signOutButton);
         Button overlayPermissionButton = findViewById(R.id.overlayPermissionButton);
-        Button startOverlayButton = findViewById(R.id.startOverlayButton);
-        Button stopOverlayButton = findViewById(R.id.stopOverlayButton);
+        startOverlayButton = findViewById(R.id.startOverlayButton);
+        stopOverlayButton = findViewById(R.id.stopOverlayButton);
 
         handleAuthIntent(getIntent());
 
@@ -44,6 +51,7 @@ public class MainActivity extends AppCompatActivity {
             authManager.signOut();
             refreshAuthStatus();
             statusText.setText("Status: signed out");
+            refreshControlVisibility();
         });
 
         overlayPermissionButton.setOnClickListener(v -> requestOverlayPermission());
@@ -62,15 +70,18 @@ public class MainActivity extends AppCompatActivity {
             intent.setAction(HedgehogOverlayService.ACTION_START);
             ContextCompat.startForegroundService(this, intent);
             statusText.setText("Status: starting overlay...");
+            refreshControlVisibility();
         });
         stopOverlayButton.setOnClickListener(v -> {
             Intent intent = new Intent(this, HedgehogOverlayService.class);
             intent.setAction(HedgehogOverlayService.ACTION_STOP);
             startService(intent);
             statusText.setText("Status: stopping overlay...");
+            refreshControlVisibility();
         });
 
         refreshAuthStatus();
+        refreshControlVisibility();
     }
 
     @Override
@@ -86,6 +97,7 @@ public class MainActivity extends AppCompatActivity {
         boolean allowed = Settings.canDrawOverlays(this);
         statusText.setText(allowed ? "Status: overlay permission granted" : "Status: overlay permission not granted");
         refreshAuthStatus();
+        refreshControlVisibility();
     }
 
     private void requestOverlayPermission() {
@@ -205,6 +217,7 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     if (handled) {
                         refreshAuthStatus();
+                        refreshControlVisibility();
                         Toast.makeText(this, "Signed in. You can start Hitomi now.", Toast.LENGTH_SHORT).show();
                     } else {
                         authStatusText.setText("Auth: callback received but no token found");
@@ -219,6 +232,7 @@ public class MainActivity extends AppCompatActivity {
     private void refreshAuthStatus() {
         if (!authManager.isSignedIn()) {
             authStatusText.setText("Auth: signed out");
+            refreshControlVisibility();
             return;
         }
         String provider = authManager.getProvider();
@@ -229,6 +243,17 @@ public class MainActivity extends AppCompatActivity {
         if (!display.isEmpty()) sb.append(" as ").append(display);
         if (!email.isEmpty() && (display.isEmpty() || !display.equals(email))) sb.append(" (").append(email).append(")");
         authStatusText.setText(sb.toString());
+        refreshControlVisibility();
+    }
+
+    private void refreshControlVisibility() {
+        boolean signedIn = authManager != null && authManager.isSignedIn();
+        boolean overlayRunning = HedgehogOverlayService.isOverlayRunning();
+        if (loginButton != null) loginButton.setVisibility(signedIn ? android.view.View.GONE : android.view.View.VISIBLE);
+        if (loginHintText != null) loginHintText.setVisibility(signedIn ? android.view.View.GONE : android.view.View.VISIBLE);
+        if (signOutButton != null) signOutButton.setVisibility(signedIn ? android.view.View.VISIBLE : android.view.View.GONE);
+        if (startOverlayButton != null) startOverlayButton.setVisibility(overlayRunning ? android.view.View.GONE : android.view.View.VISIBLE);
+        if (stopOverlayButton != null) stopOverlayButton.setVisibility(overlayRunning ? android.view.View.VISIBLE : android.view.View.GONE);
     }
 
     private static String safeMessage(Exception e) {

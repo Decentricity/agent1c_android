@@ -4,10 +4,21 @@
     android:layout_height="wrap_content"
     android:orientation="vertical">
 
+    <View
+        android:id="@+id/hitomiBubbleTailTop"
+        android:layout_width="18dp"
+        android:layout_height="12dp"
+        android:layout_gravity="center_horizontal"
+        android:layout_marginBottom="-1dp"
+        android:background="@drawable/overlay_bubble_tail"
+        android:elevation="12dp"
+        android:rotation="180"
+        android:visibility="gone" />
+
     <LinearLayout
         android:layout_width="260dp"
         android:layout_height="wrap_content"
-        android:background="#F3EDCB"
+        android:background="@drawable/overlay_bubble_bg"
         android:elevation="8dp"
         android:orientation="vertical"
         android:padding="8dp">
@@ -36,14 +47,25 @@
                 android:src="@android:drawable/ic_menu_close_clear_cancel" />
         </LinearLayout>
 
-        <TextView
-            android:id="@+id/hitomiBubbleBody"
+        <ScrollView
+            android:id="@+id/hitomiBubbleBodyScroll"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="120dp"
             android:layout_marginTop="6dp"
-            android:maxLines="6"
-            android:textColor="#111111"
-            android:textSize="12sp" />
+            android:background="#FFF8E6"
+            android:fillViewport="true"
+            android:overScrollMode="ifContentScrolls"
+            android:scrollbars="vertical">
+
+            <TextView
+                android:id="@+id/hitomiBubbleBody"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="112dp"
+                android:padding="6dp"
+                android:textColor="#111111"
+                android:textSize="12sp" />
+        </ScrollView>
 
         <LinearLayout
             android:layout_width="match_parent"
@@ -74,10 +96,12 @@
     </LinearLayout>
 
     <View
+        android:id="@+id/hitomiBubbleTailBottom"
         android:layout_width="18dp"
-        android:layout_height="18dp"
+        android:layout_height="12dp"
         android:layout_gravity="center_horizontal"
-        android:layout_marginTop="-3dp"
-        android:background="@drawable/overlay_bubble_tail" />
+        android:layout_marginTop="-1dp"
+        android:background="@drawable/overlay_bubble_tail"
+        android:elevation="12dp" />
 
 </LinearLayout>

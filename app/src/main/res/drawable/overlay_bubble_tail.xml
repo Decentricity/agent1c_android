@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<rotate xmlns:android="http://schemas.android.com/apk/res/android"
-    android:drawable="@drawable/overlay_bubble_tail_square"
-    android:fromDegrees="45"
-    android:pivotX="50%"
-    android:pivotY="50%" />
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="18dp"
+    android:height="12dp"
+    android:viewportWidth="18"
+    android:viewportHeight="12">
+    <path
+        android:fillColor="#F3EDCB"
+        android:pathData="M9,12 L0,0 L18,0 Z" />
+</vector>

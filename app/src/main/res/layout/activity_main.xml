@@ -2,91 +2,159 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#101014">
+    android:background="#cfcfcf"
+    android:fillViewport="true">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="20dp">
+        android:padding="12dp">
 
-        <TextView
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/beos_titlepill_bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingLeft="8dp"
+            android:paddingTop="4dp"
+            android:paddingRight="8dp"
+            android:paddingBottom="4dp">
+
+            <View
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:background="@drawable/beos_title_button_bg" />
+
+            <View
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:layout_marginStart="4dp"
+                android:background="@drawable/beos_title_button_bg" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="10dp"
+                android:layout_marginEnd="10dp"
+                android:text="Hitomi"
+                android:textColor="#111111"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <View
+                android:layout_width="10dp"
+                android:layout_height="10dp"
+                android:background="@drawable/beos_title_button_bg" />
+        </LinearLayout>
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Hitomi Android"
-            android:textColor="#F6EAF4"
-            android:textSize="20sp"
-            android:textStyle="bold" />
+            android:layout_marginTop="-1dp"
+            android:background="@drawable/beos_window_body_bg"
+            android:orientation="vertical"
+            android:padding="12dp">
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="Sign in with your Agent1c.ai account, then start the floating Hitomi overlay. This Android build uses your existing Supabase + xAI cloud chat backend."
-            android:textColor="#DDD4DC"
-            android:textSize="14sp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Hitomi Android"
+                android:textColor="#111111"
+                android:textSize="20sp"
+                android:textStyle="bold" />
 
-        <TextView
-            android:id="@+id/authStatusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="14dp"
-            android:text="Auth: signed out"
-            android:textColor="#FFB8E2"
-            android:textStyle="bold" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Sign in with your Agent1c.ai account, then start the floating Hitomi overlay. This Android build uses your existing Supabase + xAI cloud chat backend."
+                android:textColor="#222222"
+                android:textSize="13sp" />
 
-        <Button
-            android:id="@+id/loginButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="Login" />
+            <TextView
+                android:id="@+id/authStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="#efe7d1"
+                android:padding="6dp"
+                android:text="Auth: signed out"
+                android:textColor="#7a1d47"
+                android:textStyle="bold" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Choose Google, X, or Magic Link in the Agent1c.ai login window."
-            android:textColor="#DDD4DC"
-            android:textSize="12sp" />
+            <Button
+                android:id="@+id/loginButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="10dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Login"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
 
-        <Button
-            android:id="@+id/signOutButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Sign Out" />
+            <TextView
+                android:id="@+id/loginHintText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Choose Google, X, or Magic Link in the Agent1c.ai login window."
+                android:textColor="#444444"
+                android:textSize="12sp" />
 
-        <Button
-            android:id="@+id/overlayPermissionButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:text="Enable Overlay Permission" />
+            <Button
+                android:id="@+id/signOutButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Sign Out"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
 
-        <Button
-            android:id="@+id/startOverlayButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="Start Hitomi Overlay" />
+            <Button
+                android:id="@+id/overlayPermissionButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="14dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Enable Overlay Permission"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
 
-        <Button
-            android:id="@+id/stopOverlayButton"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="Stop Hitomi Overlay" />
+            <Button
+                android:id="@+id/startOverlayButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Start Hitomi Overlay"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
 
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
-            android:paddingBottom="12dp"
-            android:text="Status: waiting"
-            android:textColor="#FFB8E2"
-            android:textStyle="bold" />
+            <Button
+                android:id="@+id/stopOverlayButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Stop Hitomi Overlay"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:background="#f4f4f4"
+                android:padding="6dp"
+                android:text="Status: waiting"
+                android:textColor="#1f1f1f"
+                android:textStyle="bold" />
+        </LinearLayout>
 
     </LinearLayout>
 </ScrollView>
