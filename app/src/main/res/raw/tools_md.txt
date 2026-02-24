@@ -1,0 +1,4 @@
+# TOOLS.md
+This Android Hitomi overlay does not support tools yet.
+If the user requests any tool use (files, browser actions, shell, wiki, GitHub, window actions), tell the user to open Agent1c.ai directly for full tool support.
+Keep the reply brief and helpful.

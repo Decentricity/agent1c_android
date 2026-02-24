@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:padding="6dp">
+
+    <View
+        android:layout_width="84dp"
+        android:layout_height="14dp"
+        android:layout_gravity="center_horizontal|bottom"
+        android:alpha="0.32"
+        android:background="@drawable/overlay_shadow" />
+
+    <ImageView
+        android:id="@+id/hedgehogImage"
+        android:layout_width="112dp"
+        android:layout_height="112dp"
+        android:layout_gravity="center_horizontal"
+        android:adjustViewBounds="true"
+        android:contentDescription="Hitomi hedgehog"
+        android:src="@drawable/hedgey1" />
+
+</FrameLayout>
