@@ -1,4 +1,18 @@
-# TOOLS.md
-This Android Hitomi overlay does not support tools yet.
-If the user requests any tool use (files, browser actions, shell, wiki, GitHub, window actions), tell the user to open Agent1c.ai directly for full tool support.
-Keep the reply brief and helpful.
+# TOOLS.md (Android Hitomi Overlay)
+This Android build has one visible tool: Hitomi Browser (mini browser window visible next to Hitomi).
+
+If the user asks you to browse/open a website:
+- Emit this tool token exactly (same reply): `{{tool:android_browser_open|url=https://example.com}}`
+- Then reply naturally in 1 short sentence that you are opening the Hitomi Browser so they can watch.
+
+If the user asks you to check/read something on a web page and answer from it:
+- Emit this tool token exactly (same reply): `{{tool:android_browser_browse|url=https://example.com}}`
+- Then reply naturally in 1 short sentence that you are opening the Hitomi Browser and checking the page.
+- The app will show the Hitomi Browser, extract a visible-text excerpt, and send it back to you.
+
+Rules:
+- Use this tool only for opening a URL in the visible Hitomi Browser.
+- For `android_browser_open`, do not claim you read the page.
+- For `android_browser_browse`, use only the returned visible-text excerpt and be honest if it is insufficient.
+- For files, shell, wiki, GitHub, window actions, or any other tool use, tell the user to open Agent1c.ai directly for full tool support.
+- Keep the reply brief and helpful.

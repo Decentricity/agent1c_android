@@ -25,6 +25,9 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -43,8 +46,12 @@ import androidx.core.content.ContextCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class HedgehogOverlayService extends Service {
     public static final String ACTION_START = "ai.agent1c.hitomi.START_OVERLAY";
@@ -60,25 +67,32 @@ public class HedgehogOverlayService extends Service {
     private static final int EDGE_TAB_WIDTH_DP = 56;
     private static final int EDGE_TAB_HEIGHT_DP = 112;
     private static final int EDGE_TAB_VISIBLE_SLICE_DP = 10;
+    private static final String ANDROID_BROWSER_TOOL_NAME = "android_browser_open";
+    private static final String ANDROID_BROWSER_BROWSE_TOOL_NAME = "android_browser_browse";
 
     private WindowManager windowManager;
     private View hedgehogView;
     private View bubbleView;
+    private View browserView;
     private TextView edgeTabView;
     private WindowManager.LayoutParams hedgehogParams;
     private WindowManager.LayoutParams bubbleParams;
+    private WindowManager.LayoutParams browserParams;
     private WindowManager.LayoutParams edgeTabParams;
     private boolean bubbleVisible = false;
+    private boolean browserVisible = false;
     private final ExecutorService chatExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final JSONArray chatHistory = new JSONArray();
     private HitomiCloudChatClient chatClient;
     private TextView bubbleBodyView;
+    private TextView browserUrlView;
     private ScrollView bubbleBodyScrollView;
     private View bubbleTailTopView;
     private View bubbleTailBottomView;
     private EditText bubbleInputView;
     private ImageButton bubbleSendButton;
+    private WebView hitomiBrowserWebView;
     private boolean chatInFlight = false;
     private String transcript = "";
     private boolean keyboardLiftActive = false;
@@ -106,6 +120,7 @@ public class HedgehogOverlayService extends Service {
     private boolean hiddenEdgeRight = false;
     private int hiddenRestoreX = -1;
     private int hiddenRestoreY = -1;
+    private BrowserReadRequest pendingBrowserReadRequest;
     private final Runnable sttRestartRunnable = new Runnable() {
         @Override public void run() {
             sttRestartScheduled = false;
@@ -152,9 +167,18 @@ public class HedgehogOverlayService extends Service {
             if (bubbleView != null) {
                 try { windowManager.removeView(bubbleView); } catch (Exception ignored) {}
             }
+            if (browserView != null) {
+                try { windowManager.removeView(browserView); } catch (Exception ignored) {}
+            }
             if (edgeTabView != null) {
                 try { windowManager.removeView(edgeTabView); } catch (Exception ignored) {}
             }
+        }
+        if (hitomiBrowserWebView != null) {
+            try {
+                hitomiBrowserWebView.stopLoading();
+                hitomiBrowserWebView.destroy();
+            } catch (Exception ignored) {}
         }
     }
 
@@ -170,6 +194,7 @@ public class HedgehogOverlayService extends Service {
 
         hedgehogView = LayoutInflater.from(this).inflate(R.layout.overlay_hedgehog, null);
         bubbleView = LayoutInflater.from(this).inflate(R.layout.overlay_bubble, null);
+        browserView = LayoutInflater.from(this).inflate(R.layout.overlay_browser, null);
         edgeTabView = buildEdgeTabView();
 
         hedgehogParams = new WindowManager.LayoutParams(
@@ -195,6 +220,18 @@ public class HedgehogOverlayService extends Service {
         bubbleParams.gravity = Gravity.TOP | Gravity.START;
         bubbleParams.x = dp(82);
         bubbleParams.y = dp(80);
+        browserParams = new WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        );
+        browserParams.gravity = Gravity.TOP | Gravity.START;
+        browserParams.x = dp(120);
+        browserParams.y = dp(120);
         edgeTabParams = new WindowManager.LayoutParams(
             dp(EDGE_TAB_WIDTH_DP),
             dp(EDGE_TAB_HEIGHT_DP),
@@ -207,12 +244,16 @@ public class HedgehogOverlayService extends Service {
         edgeTabParams.y = hedgehogParams.y;
 
         setupBubbleUi();
+        setupBrowserUi();
         setupQuickActionsUi();
         setupDragAndTap();
 
+        windowManager.addView(browserView, browserParams);
         windowManager.addView(bubbleView, bubbleParams);
         windowManager.addView(hedgehogView, hedgehogParams);
         windowManager.addView(edgeTabView, edgeTabParams);
+        browserView.setVisibility(View.GONE);
+        browserVisible = false;
         bubbleView.setVisibility(View.GONE);
         edgeTabView.setVisibility(View.GONE);
         chatClient = new HitomiCloudChatClient(this);
@@ -229,6 +270,156 @@ public class HedgehogOverlayService extends Service {
             transcript = "Hitomi: Hi! I'm Hitomi, your tiny hedgehog friend. Sign in in the app, then we can chat here.";
         }
         renderTranscript(false);
+    }
+
+    private void setupBrowserUi() {
+        if (browserView == null) return;
+        TextView title = browserView.findViewById(R.id.hitomiBrowserTitleText);
+        browserUrlView = browserView.findViewById(R.id.hitomiBrowserUrl);
+        hitomiBrowserWebView = browserView.findViewById(R.id.hitomiBrowserWebView);
+        ImageButton close = browserView.findViewById(R.id.hitomiBrowserClose);
+        View dragHandle = browserView.findViewById(R.id.hitomiBrowserTitlePill);
+        if (title != null) title.setText("Hitomi Browser");
+        if (close != null) close.setOnClickListener(v -> {
+            browserVisible = false;
+            browserView.setVisibility(View.GONE);
+        });
+        if (dragHandle != null) setupBrowserDrag(dragHandle);
+        if (hitomiBrowserWebView != null) {
+            WebSettings ws = hitomiBrowserWebView.getSettings();
+            ws.setJavaScriptEnabled(true);
+            ws.setDomStorageEnabled(true);
+            ws.setLoadsImagesAutomatically(true);
+            ws.setBuiltInZoomControls(false);
+            hitomiBrowserWebView.setWebViewClient(new WebViewClient() {
+                @Override
+                public void onPageFinished(WebView view, String url) {
+                    super.onPageFinished(view, url);
+                    if (browserUrlView != null && url != null) browserUrlView.setText(url);
+                    maybeResolvePendingBrowserRead(view, url);
+                }
+            });
+            if (browserUrlView != null) browserUrlView.setText("https://example.com");
+            hitomiBrowserWebView.loadUrl("https://example.com");
+        }
+    }
+
+    private void showHitomiBrowserForUrl(String rawUrl) {
+        if (browserView == null || browserParams == null || hitomiBrowserWebView == null) return;
+        String url = normalizeBrowserUrl(rawUrl);
+        if (url == null || url.isEmpty()) return;
+        positionBrowserNearHedgehog();
+        browserVisible = true;
+        browserView.setVisibility(View.VISIBLE);
+        safeUpdate(browserView, browserParams);
+        if (browserUrlView != null) browserUrlView.setText(url);
+        hitomiBrowserWebView.loadUrl(url);
+    }
+
+    private void positionBrowserNearHedgehog() {
+        if (hedgehogParams == null || browserParams == null) return;
+        int screenW = getScreenWidth();
+        int screenH = getScreenHeight();
+        int browserW = (browserView != null && browserView.getWidth() > 0) ? browserView.getWidth() : dp(240);
+        int browserH = (browserView != null && browserView.getHeight() > 0) ? browserView.getHeight() : dp(190);
+        int gap = dp(10);
+        int desiredX = hedgehogParams.x + dp(HEDGEHOG_TOUCH_BOX_DP) + gap;
+        if (desiredX + browserW > screenW - dp(8)) {
+            desiredX = hedgehogParams.x - browserW - gap;
+        }
+        desiredX = clamp(desiredX, dp(4), Math.max(dp(4), screenW - browserW - dp(4)));
+        int desiredY = clamp(hedgehogParams.y - dp(24), 0, Math.max(0, screenH - browserH));
+        browserParams.x = desiredX;
+        browserParams.y = desiredY;
+    }
+
+    private String normalizeBrowserUrl(String rawUrl) {
+        if (rawUrl == null) return null;
+        String url = rawUrl.trim();
+        if (url.isEmpty()) return null;
+        if (url.startsWith("http://") || url.startsWith("https://")) return url;
+        if (url.matches("^[a-zA-Z][a-zA-Z0-9+.-]*:.*$")) return null;
+        return "https://" + url;
+    }
+
+    private void requestBrowserSnapshot(String rawUrl, BrowserReadCallback callback) {
+        if (callback == null) return;
+        String url = normalizeBrowserUrl(rawUrl);
+        if (url == null || url.isEmpty() || hitomiBrowserWebView == null) {
+            callback.onSnapshot(null);
+            return;
+        }
+        if (pendingBrowserReadRequest != null && pendingBrowserReadRequest.timeoutRunnable != null) {
+            mainHandler.removeCallbacks(pendingBrowserReadRequest.timeoutRunnable);
+        }
+        Runnable timeout = () -> {
+            BrowserReadRequest req = pendingBrowserReadRequest;
+            if (req == null) return;
+            pendingBrowserReadRequest = null;
+            req.callback.onSnapshot(null);
+        };
+        pendingBrowserReadRequest = new BrowserReadRequest(url, callback, timeout);
+        showHitomiBrowserForUrl(url);
+        mainHandler.postDelayed(timeout, 12000);
+    }
+
+    private void maybeResolvePendingBrowserRead(WebView view, String finishedUrl) {
+        BrowserReadRequest req = pendingBrowserReadRequest;
+        if (req == null || view == null) return;
+        // Resolve on first finished page after request; redirects are fine.
+        pendingBrowserReadRequest = null;
+        if (req.timeoutRunnable != null) mainHandler.removeCallbacks(req.timeoutRunnable);
+        String js = "(function(){try{var t=(document.title||'').trim();var u=(location.href||'').trim();"
+            + "var b=(document.body&&document.body.innerText?document.body.innerText:'').replace(/\\s+/g,' ').trim();"
+            + "if(b.length>4000)b=b.slice(0,4000);"
+            + "return JSON.stringify({title:t,url:u,text:b});}catch(e){return JSON.stringify({title:'',url:'',text:''});}})();";
+        view.evaluateJavascript(js, value -> {
+            BrowserSnapshot snapshot = parseBrowserSnapshotResult(value, finishedUrl);
+            req.callback.onSnapshot(snapshot);
+        });
+    }
+
+    private BrowserSnapshot parseBrowserSnapshotResult(String jsValue, String fallbackUrl) {
+        try {
+            // evaluateJavascript returns a JSON-encoded Java string
+            String decoded = new JSONArray("[" + (jsValue == null ? "\"\"" : jsValue) + "]").getString(0);
+            JSONObject obj = new JSONObject(decoded);
+            String title = obj.optString("title", "");
+            String url = obj.optString("url", "");
+            String text = obj.optString("text", "");
+            if ((url == null || url.isEmpty()) && fallbackUrl != null) url = fallbackUrl;
+            return new BrowserSnapshot(title, url, text);
+        } catch (Exception e) {
+            return new BrowserSnapshot("", fallbackUrl == null ? "" : fallbackUrl, "");
+        }
+    }
+
+    private void setupBrowserDrag(View dragHandle) {
+        final float[] downRaw = new float[2];
+        final int[] downPos = new int[2];
+        dragHandle.setOnTouchListener((v, event) -> {
+            if (browserParams == null || browserView == null) return false;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downRaw[0] = event.getRawX();
+                    downRaw[1] = event.getRawY();
+                    downPos[0] = browserParams.x;
+                    downPos[1] = browserParams.y;
+                    return true;
+                case MotionEvent.ACTION_MOVE:
+                    int dx = (int) (event.getRawX() - downRaw[0]);
+                    int dy = (int) (event.getRawY() - downRaw[1]);
+                    browserParams.x = clamp(downPos[0] + dx, 0, Math.max(0, getScreenWidth() - dp(240)));
+                    browserParams.y = clamp(downPos[1] + dy, 0, Math.max(0, getScreenHeight() - dp(190)));
+                    safeUpdate(browserView, browserParams);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    return true;
+                default:
+                    return false;
+            }
+        });
     }
 
     private TextView buildEdgeTabView() {
@@ -871,18 +1062,41 @@ public class HedgehogOverlayService extends Service {
 
         chatExecutor.execute(() -> {
             String reply;
+            String userName = "friend";
             try {
                 SupabaseAuthManager auth = new SupabaseAuthManager(this);
-                String userName = auth.getDisplayName();
+                String resolved = auth.getDisplayName();
+                if (resolved != null && !resolved.trim().isEmpty()) userName = resolved.trim();
                 chatHistory.put(new JSONObject().put("role", "user").put("content", msg));
                 reply = chatClient.send(chatHistory, userName);
-                chatHistory.put(new JSONObject().put("role", "assistant").put("content", reply));
             } catch (Exception e) {
                 reply = "I hit a snag: " + safeMessage(e);
             }
-            final String finalReply = reply;
+            final ParsedAssistantReply parsedReply = parseAssistantReply(reply);
+            try {
+                chatHistory.put(new JSONObject().put("role", "assistant").put("content", parsedReply.visibleText));
+            } catch (Exception ignored) {
+            }
+            final String finalUserName = userName;
             mainHandler.post(() -> {
-                appendTranscriptLine("Hitomi: " + finalReply);
+                if (parsedReply.browserUrl != null && !parsedReply.browserUrl.isEmpty()) {
+                    showHitomiBrowserForUrl(parsedReply.browserUrl);
+                }
+                appendTranscriptLine("Hitomi: " + parsedReply.visibleText);
+                renderTranscript(true);
+            });
+            if (parsedReply.browserReadUrl != null && !parsedReply.browserReadUrl.isEmpty()) {
+                String followup = runBrowserReadFollowup(finalUserName, parsedReply.browserReadUrl);
+                if (followup != null && !followup.trim().isEmpty()) {
+                    try {
+                        chatHistory.put(new JSONObject().put("role", "assistant").put("content", followup));
+                    } catch (Exception ignored) {
+                    }
+                    final String visibleFollowup = followup.trim();
+                    mainHandler.post(() -> appendTranscriptLine("Hitomi: " + visibleFollowup));
+                }
+            }
+            mainHandler.post(() -> {
                 chatInFlight = false;
                 renderTranscript(false);
                 if (bubbleSendButton != null) bubbleSendButton.setEnabled(true);
@@ -897,6 +1111,148 @@ public class HedgehogOverlayService extends Service {
     private void appendTranscriptLine(String line) {
         if (transcript == null || transcript.isEmpty()) transcript = line;
         else transcript = transcript + "\n\n" + line;
+    }
+
+    private ParsedAssistantReply parseAssistantReply(String raw) {
+        String source = raw == null ? "" : raw.trim();
+        if (source.isEmpty()) return new ParsedAssistantReply("", null, null);
+        StringBuilder visible = new StringBuilder();
+        List<String> browserUrls = new ArrayList<>();
+        List<String> browserReadUrls = new ArrayList<>();
+        int idx = 0;
+        while (idx < source.length()) {
+            int start = source.indexOf("{{tool:", idx);
+            if (start < 0) {
+                visible.append(source.substring(idx));
+                break;
+            }
+            visible.append(source, idx, start);
+            int end = source.indexOf("}}", start);
+            if (end < 0) {
+                visible.append(source.substring(start));
+                break;
+            }
+            String tokenBody = source.substring(start + 2, end).trim();
+            maybeExtractAndroidBrowserTool(tokenBody, browserUrls, browserReadUrls);
+            idx = end + 2;
+        }
+        String cleaned = visible.toString()
+            .replaceAll("[ \\t]+\\n", "\n")
+            .replaceAll("\\n{3,}", "\n\n")
+            .trim();
+        if (cleaned.isEmpty() && !browserUrls.isEmpty()) {
+            cleaned = "Opening the Hitomi Browser so you can watch me browse.";
+        }
+        if (cleaned.isEmpty() && !browserReadUrls.isEmpty()) {
+            cleaned = "Opening the Hitomi Browser and reading the page for you.";
+        }
+        return new ParsedAssistantReply(
+            cleaned,
+            browserUrls.isEmpty() ? null : browserUrls.get(0),
+            browserReadUrls.isEmpty() ? null : browserReadUrls.get(0)
+        );
+    }
+
+    private void maybeExtractAndroidBrowserTool(String tokenBody, List<String> browserUrls, List<String> browserReadUrls) {
+        if (tokenBody == null || !tokenBody.startsWith("tool:")) return;
+        String payload = tokenBody.substring("tool:".length());
+        String[] parts = payload.split("\\|");
+        if (parts.length == 0) return;
+        String toolName = parts[0].trim();
+        boolean openOnly = ANDROID_BROWSER_TOOL_NAME.equals(toolName);
+        boolean browseRead = ANDROID_BROWSER_BROWSE_TOOL_NAME.equals(toolName);
+        if (!openOnly && !browseRead) return;
+        for (int i = 1; i < parts.length; i++) {
+            String part = parts[i];
+            int eq = part.indexOf('=');
+            if (eq <= 0) continue;
+            String key = part.substring(0, eq).trim();
+            String val = part.substring(eq + 1).trim();
+            if (!"url".equalsIgnoreCase(key)) continue;
+            String normalized = normalizeBrowserUrl(val);
+            if (normalized != null && !normalized.isEmpty()) {
+                if (browseRead) browserReadUrls.add(normalized);
+                else browserUrls.add(normalized);
+            }
+            return;
+        }
+    }
+
+    private String runBrowserReadFollowup(String userName, String browserReadUrl) {
+        try {
+            CountDownLatch latch = new CountDownLatch(1);
+            final BrowserSnapshot[] holder = new BrowserSnapshot[1];
+            mainHandler.post(() -> requestBrowserSnapshot(browserReadUrl, snapshot -> {
+                holder[0] = snapshot;
+                latch.countDown();
+            }));
+            latch.await(15, TimeUnit.SECONDS);
+            BrowserSnapshot snapshot = holder[0];
+            if (snapshot == null) {
+                return "I opened the Hitomi Browser, but I couldn't read the page yet. Please try again.";
+            }
+            String toolResult = buildBrowserSnapshotToolResult(snapshot);
+            try {
+                chatHistory.put(new JSONObject().put("role", "user").put("content", toolResult));
+            } catch (Exception ignored) {
+            }
+            return chatClient.send(chatHistory, userName);
+        } catch (Exception e) {
+            return "I opened the Hitomi Browser, but I hit a snag reading the page: " + safeMessage(e);
+        }
+    }
+
+    private String buildBrowserSnapshotToolResult(BrowserSnapshot snapshot) {
+        String title = snapshot.title == null ? "" : snapshot.title.trim();
+        String url = snapshot.url == null ? "" : snapshot.url.trim();
+        String text = snapshot.text == null ? "" : snapshot.text.trim();
+        if (text.length() > 3500) text = text.substring(0, 3500);
+        return "[ANDROID_BROWSER_PAGE]\n"
+            + "Hitomi Browser is visible and loaded.\n"
+            + "URL: " + url + "\n"
+            + "Title: " + title + "\n"
+            + "Visible text excerpt:\n" + text + "\n"
+            + "[/ANDROID_BROWSER_PAGE]\n"
+            + "Use this page excerpt to answer the user. If the excerpt is insufficient, say so briefly.";
+    }
+
+    private static final class ParsedAssistantReply {
+        final String visibleText;
+        final String browserUrl;
+        final String browserReadUrl;
+        ParsedAssistantReply(String visibleText, String browserUrl, String browserReadUrl) {
+            this.visibleText = (visibleText == null || visibleText.trim().isEmpty())
+                ? "Okay."
+                : visibleText.trim();
+            this.browserUrl = browserUrl;
+            this.browserReadUrl = browserReadUrl;
+        }
+    }
+
+    private interface BrowserReadCallback {
+        void onSnapshot(BrowserSnapshot snapshot);
+    }
+
+    private static final class BrowserReadRequest {
+        final String requestedUrl;
+        final BrowserReadCallback callback;
+        final Runnable timeoutRunnable;
+        BrowserReadRequest(String requestedUrl, BrowserReadCallback callback, Runnable timeoutRunnable) {
+            this.requestedUrl = requestedUrl;
+            this.callback = callback;
+            this.timeoutRunnable = timeoutRunnable;
+        }
+    }
+
+    private static final class BrowserSnapshot {
+        final String title;
+        final String url;
+        final String text;
+        BrowserSnapshot(String title, String url, String text) {
+            this.title = title == null ? "" : title;
+            this.url = url == null ? "" : url;
+            this.text = text == null ? "" : text;
+        }
     }
 
     private void renderTranscript(boolean thinking) {

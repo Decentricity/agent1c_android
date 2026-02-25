@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:id="@+id/hitomiBrowserTitlePill"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:background="@drawable/beos_titlepill_bg"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingLeft="6dp"
+        android:paddingTop="3dp"
+        android:paddingRight="6dp"
+        android:paddingBottom="3dp">
+
+        <View
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:background="@drawable/beos_title_button_bg" />
+
+        <View
+            android:layout_width="8dp"
+            android:layout_height="8dp"
+            android:layout_marginStart="3dp"
+            android:background="@drawable/beos_title_button_bg" />
+
+        <TextView
+            android:id="@+id/hitomiBrowserTitleText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:text="Hitomi Browser"
+            android:textColor="#111111"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/hitomiBrowserClose"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:background="@android:color/transparent"
+            android:contentDescription="Close Hitomi browser"
+            android:padding="2dp"
+            android:src="@android:drawable/ic_menu_close_clear_cancel" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="240dp"
+        android:layout_height="190dp"
+        android:layout_marginTop="-1dp"
+        android:background="@drawable/beos_window_body_bg"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+        <TextView
+            android:id="@+id/hitomiBrowserUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="#f4f4f4"
+            android:padding="4dp"
+            android:text="about:blank"
+            android:textColor="#333333"
+            android:textSize="10sp"
+            android:singleLine="true"
+            android:ellipsize="end" />
+
+        <WebView
+            android:id="@+id/hitomiBrowserWebView"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:layout_marginTop="4dp"
+            android:background="#ffffff" />
+    </LinearLayout>
+
+</LinearLayout>

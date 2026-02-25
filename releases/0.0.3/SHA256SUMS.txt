@@ -1,0 +1,1 @@
+96eb49ffe0bfe84a5faea73b6ad278684578d2510968033ed6498b4abfd5e97b  releases/0.0.3/agent1c-hitomi-android-v0.0.3-debug.apk
