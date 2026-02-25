@@ -1,6 +1,6 @@
 # Agent1c Android (Hitomi Overlay)
 
-![Hitomi Hedgehog](app/src/main/res/drawable/hedgey1.png)
+![Hitomi Android Screenshot](docs/hitomi-android-screenshot-latest.png)
 
 Native Android floating Hitomi ("talking hedgehog") companion app for the Agent1c ecosystem.
 
@@ -41,7 +41,7 @@ Release `0.0.5`:
 ## Notes
 
 - This is an early prototype release.
-- We plan to publish through F-Droid later; for now, direct APK testing is the intended path.
+- I plan to publish through F-Droid later; for now, direct APK testing is the intended path.
 - App signing / release builds can be added after the auth + overlay UX stabilizes further.
 
 ## Termux (T1/T1.5) setup notes
