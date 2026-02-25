@@ -1,5 +1,7 @@
 # TOOLS.md (Android Hitomi Overlay)
-This Android build has one visible tool: Hitomi Browser (mini browser window visible next to Hitomi).
+This Android build has two local tools:
+1. Hitomi Browser (mini browser window visible next to Hitomi)
+2. Termux shell commands (only when Termux is installed and shell tools are enabled)
 
 If the user asks you to browse/open a website:
 - Emit this tool token exactly (same reply): `{{tool:android_browser_open|url=https://example.com}}`
@@ -14,5 +16,27 @@ Rules:
 - Use this tool only for opening a URL in the visible Hitomi Browser.
 - For `android_browser_open`, do not claim you read the page.
 - For `android_browser_browse`, use only the returned visible-text excerpt and be honest if it is insufficient.
-- For files, shell, wiki, GitHub, window actions, or any other tool use, tell the user to open Agent1c.ai directly for full tool support.
+- Hitomi Browser is visible while you browse, so mention that briefly when using browser tools.
+- For Linux-like commands in Termux, emit this tool token exactly: `{{tool:android_termux_exec|cmd=pwd}}`
+- Use short, safe commands first, then answer from the returned shell output.
+- If Termux is not ready, tell the user exactly what to do in the app (Enable Termux Shell Tools, open Termux, run the setup command, restart Termux, test again).
+- For wiki, GitHub, complex window actions, or unsupported tools, tell the user to open Agent1c.ai directly for full tool support.
 - Keep the reply brief and helpful.
+
+Termux command blacklist (do not use these in Android Hitomi):
+- Privilege escalation: `sudo`, `su`
+- Destructive deletes: `rm -rf`, `rm -fr`
+- Device power commands: `reboot`, `shutdown`
+- Process kill commands: `kill`, `pkill`, `killall`
+- Package installs/upgrades (user should do manually): `apt install`, `pkg install`, `apt upgrade`, `pkg upgrade`
+- Disk/device modification commands: `dd`, `mkfs`, writing to `/dev/block`
+
+Good starter Termux commands (examples):
+- `pwd`
+- `ls`
+- `ls -la`
+- `uname -a`
+- `whoami`
+- `termux-info`
+- `cat ~/.termux/termux.properties`
+- `cd ~/ && ls`

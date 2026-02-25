@@ -1,12 +1,15 @@
 package ai.agent1c.hitomi;
 
 import android.content.Intent;
+import android.content.ClipboardManager;
+import android.content.ClipData;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -21,15 +24,30 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_REQUEST_MIC_PERMISSION = "request_mic_permission";
+    public static final String EXTRA_FORCE_SHOW_MAIN = "force_show_main";
     private static final int REQ_RECORD_AUDIO = 4201;
+    private static final int REQ_TERMUX_RUN_COMMAND = 4202;
+    private static final String TERMUX_EXTERNAL_APPS_CMD =
+        "mkdir -p ~/.termux && grep -qx 'allow-external-apps=true' ~/.termux/termux.properties 2>/dev/null || echo 'allow-external-apps=true' >> ~/.termux/termux.properties";
     private TextView statusText;
     private TextView authStatusText;
     private TextView loginHintText;
     private SupabaseAuthManager authManager;
+    private TermuxCommandBridge termuxBridge;
     private Button loginButton;
     private Button signOutButton;
     private Button startOverlayButton;
     private Button stopOverlayButton;
+    private TextView termuxStatusText;
+    private Button termuxInstallButton;
+    private Button termuxEnableButton;
+    private Button termuxOpenButton;
+    private Button termuxTestButton;
+    private View termuxSetupPanel;
+    private TextView termuxSetupHelpText;
+    private TextView termuxSetupCommandText;
+    private Button termuxSetupCopyButton;
+    private boolean forceShowMain;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -38,6 +56,8 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         authManager = new SupabaseAuthManager(this);
+        forceShowMain = getIntent() != null && getIntent().getBooleanExtra(EXTRA_FORCE_SHOW_MAIN, false);
+        termuxBridge = new TermuxCommandBridge(this);
         statusText = findViewById(R.id.statusText);
         authStatusText = findViewById(R.id.authStatusText);
         loginHintText = findViewById(R.id.loginHintText);
@@ -46,6 +66,15 @@ public class MainActivity extends AppCompatActivity {
         Button overlayPermissionButton = findViewById(R.id.overlayPermissionButton);
         startOverlayButton = findViewById(R.id.startOverlayButton);
         stopOverlayButton = findViewById(R.id.stopOverlayButton);
+        termuxStatusText = findViewById(R.id.termuxStatusText);
+        termuxInstallButton = findViewById(R.id.termuxInstallButton);
+        termuxEnableButton = findViewById(R.id.termuxEnableButton);
+        termuxOpenButton = findViewById(R.id.termuxOpenButton);
+        termuxTestButton = findViewById(R.id.termuxTestButton);
+        termuxSetupPanel = findViewById(R.id.termuxSetupPanel);
+        termuxSetupHelpText = findViewById(R.id.termuxSetupHelpText);
+        termuxSetupCommandText = findViewById(R.id.termuxSetupCommandText);
+        termuxSetupCopyButton = findViewById(R.id.termuxSetupCopyButton);
 
         handleAuthIntent(getIntent());
         maybeHandlePermissionIntent(getIntent());
@@ -83,15 +112,25 @@ public class MainActivity extends AppCompatActivity {
             statusText.setText("Status: stopping overlay...");
             refreshControlVisibility();
         });
+        termuxInstallButton.setOnClickListener(v -> openTermuxInstallPage());
+        if (termuxEnableButton != null) termuxEnableButton.setOnClickListener(v -> enableTermuxShellTools());
+        termuxOpenButton.setOnClickListener(v -> openTermuxApp());
+        termuxTestButton.setOnClickListener(v -> runTermuxTestCommand());
+        if (termuxSetupCopyButton != null) {
+            termuxSetupCopyButton.setOnClickListener(v -> copyTermuxSetupCommand());
+        }
 
         refreshAuthStatus();
         refreshControlVisibility();
+        refreshTermuxStatus();
+        maybeAutoLaunchOverlayAndHideMain();
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        forceShowMain = intent != null && intent.getBooleanExtra(EXTRA_FORCE_SHOW_MAIN, false);
         handleAuthIntent(intent);
         maybeHandlePermissionIntent(intent);
     }
@@ -103,6 +142,14 @@ public class MainActivity extends AppCompatActivity {
         statusText.setText(allowed ? "Status: overlay permission granted" : "Status: overlay permission not granted");
         refreshAuthStatus();
         refreshControlVisibility();
+        refreshTermuxStatus();
+        maybeAutoLaunchOverlayAndHideMain();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        if (termuxBridge != null) termuxBridge.shutdown();
     }
 
     private void requestOverlayPermission() {
@@ -135,14 +182,27 @@ public class MainActivity extends AppCompatActivity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode != REQ_RECORD_AUDIO) return;
-        boolean granted = grantResults != null && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
-        if (granted) {
-            statusText.setText("Status: microphone permission granted");
-            Toast.makeText(this, "Microphone enabled for Hitomi.", Toast.LENGTH_SHORT).show();
-        } else {
-            statusText.setText("Status: microphone permission denied");
-            Toast.makeText(this, "Microphone permission is required for always listening.", Toast.LENGTH_SHORT).show();
+        if (requestCode == REQ_RECORD_AUDIO) {
+            boolean granted = grantResults != null && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                statusText.setText("Status: microphone permission granted");
+                Toast.makeText(this, "Microphone enabled for Hitomi.", Toast.LENGTH_SHORT).show();
+            } else {
+                statusText.setText("Status: microphone permission denied");
+                Toast.makeText(this, "Microphone permission is required for always listening.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        if (requestCode == REQ_TERMUX_RUN_COMMAND) {
+            boolean granted = grantResults != null && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                statusText.setText("Status: Termux command permission granted. Next: enable external apps in Termux.");
+                Toast.makeText(this, "Termux permission granted. Now enable external apps in Termux settings/file.", Toast.LENGTH_LONG).show();
+            } else {
+                statusText.setText("Status: Termux command permission denied");
+                Toast.makeText(this, "Grant Termux RUN_COMMAND permission to use local shell tools.", Toast.LENGTH_LONG).show();
+            }
+            refreshTermuxStatus();
         }
     }
 
@@ -257,6 +317,7 @@ public class MainActivity extends AppCompatActivity {
                         refreshAuthStatus();
                         refreshControlVisibility();
                         Toast.makeText(this, "Signed in. You can start Hitomi now.", Toast.LENGTH_SHORT).show();
+                        maybeAutoLaunchOverlayAndHideMain();
                     } else {
                         authStatusText.setText("Auth: callback received but no token found");
                     }
@@ -292,6 +353,175 @@ public class MainActivity extends AppCompatActivity {
         if (signOutButton != null) signOutButton.setVisibility(signedIn ? android.view.View.VISIBLE : android.view.View.GONE);
         if (startOverlayButton != null) startOverlayButton.setVisibility(overlayRunning ? android.view.View.GONE : android.view.View.VISIBLE);
         if (stopOverlayButton != null) stopOverlayButton.setVisibility(overlayRunning ? android.view.View.VISIBLE : android.view.View.GONE);
+    }
+
+    private void maybeAutoLaunchOverlayAndHideMain() {
+        if (forceShowMain) return;
+        if (authManager == null || !authManager.isSignedIn()) return;
+        if (!Settings.canDrawOverlays(this)) return;
+        if (!HedgehogOverlayService.isOverlayRunning()) {
+            Intent intent = new Intent(this, HedgehogOverlayService.class);
+            intent.setAction(HedgehogOverlayService.ACTION_START);
+            ContextCompat.startForegroundService(this, intent);
+            statusText.setText("Status: starting overlay...");
+            refreshControlVisibility();
+        }
+        moveTaskToBack(true);
+        finish();
+    }
+
+    private void refreshTermuxStatus() {
+        if (termuxBridge == null || termuxStatusText == null) return;
+        boolean installed = termuxBridge.isTermuxInstalled();
+        boolean service = termuxBridge.isRunCommandServiceAvailable();
+        if (!installed) {
+            termuxStatusText.setText("Termux: not installed");
+            hideTermuxSetupPanel();
+        } else if (!service) {
+            termuxStatusText.setText("Termux: installed, RunCommand service unavailable");
+        } else if (!hasTermuxRunCommandPermission()) {
+            termuxStatusText.setText("Termux: installed and bridge available (grant Termux command permission)");
+        } else {
+            termuxStatusText.setText("Termux: installed and command bridge available");
+        }
+        if (termuxInstallButton != null) termuxInstallButton.setVisibility(installed ? View.GONE : View.VISIBLE);
+        if (termuxEnableButton != null) termuxEnableButton.setVisibility(installed ? View.VISIBLE : View.GONE);
+        if (termuxOpenButton != null) termuxOpenButton.setVisibility(installed ? View.VISIBLE : View.GONE);
+        if (termuxTestButton != null) termuxTestButton.setEnabled(installed && service && hasTermuxRunCommandPermission());
+    }
+
+    private boolean hasTermuxRunCommandPermission() {
+        return ContextCompat.checkSelfPermission(this, "com.termux.permission.RUN_COMMAND")
+            == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void enableTermuxShellTools() {
+        if (termuxBridge == null || !termuxBridge.isTermuxInstalled()) {
+            statusText.setText("Status: install Termux first (F-Droid)");
+            openTermuxInstallPage();
+            return;
+        }
+        if (!termuxBridge.isRunCommandServiceAvailable()) {
+            statusText.setText("Status: Termux RunCommand service unavailable");
+            Toast.makeText(this, "Termux command service not available on this Termux build.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!hasTermuxRunCommandPermission()) {
+            ActivityCompat.requestPermissions(this, new String[]{"com.termux.permission.RUN_COMMAND"}, REQ_TERMUX_RUN_COMMAND);
+            return;
+        }
+        showTermuxExternalAppsInstructions();
+    }
+
+    private void openTermuxInstallPage() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://f-droid.org/packages/com.termux/")));
+        } catch (Exception e) {
+            statusText.setText("Status: couldn't open F-Droid page (" + safeMessage(e) + ")");
+        }
+    }
+
+    private void openTermuxApp() {
+        try {
+            Intent launch = getPackageManager().getLaunchIntentForPackage(TermuxCommandBridge.TERMUX_PACKAGE);
+            if (launch == null) {
+                statusText.setText("Status: Termux app not found");
+                refreshTermuxStatus();
+                return;
+            }
+            startActivity(launch);
+            statusText.setText("Status: opened Termux. If command tests fail, allow external app commands in Termux.");
+        } catch (Exception e) {
+            statusText.setText("Status: failed to open Termux (" + safeMessage(e) + ")");
+        }
+    }
+
+    private void showTermuxExternalAppsInstructions() {
+        statusText.setText(
+            "Status: Configure Termux external app commands, restart Termux, then tap Test Termux Command."
+        );
+        showTermuxSetupPanel(
+            "In Termux, run setup command, then fully close and reopen Termux, then tap Test Termux Command.",
+            TERMUX_EXTERNAL_APPS_CMD
+        );
+        Toast.makeText(this, "Open Termux, run the setup command shown, restart Termux, then test again.", Toast.LENGTH_LONG).show();
+    }
+
+    private void showTermuxSetupPanel(String help, String cmd) {
+        if (termuxSetupHelpText != null) termuxSetupHelpText.setText(help);
+        if (termuxSetupCommandText != null) termuxSetupCommandText.setText(cmd == null ? "" : cmd);
+        if (termuxSetupPanel != null) termuxSetupPanel.setVisibility(View.VISIBLE);
+    }
+
+    private void hideTermuxSetupPanel() {
+        if (termuxSetupPanel != null) termuxSetupPanel.setVisibility(View.GONE);
+    }
+
+    private void copyTermuxSetupCommand() {
+        String text = termuxSetupCommandText == null ? "" : String.valueOf(termuxSetupCommandText.getText());
+        if (text.trim().isEmpty()) {
+            Toast.makeText(this, "No setup command to copy yet.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("Termux setup command", text));
+            Toast.makeText(this, "Copied Termux setup command.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void runTermuxTestCommand() {
+        if (termuxBridge == null) return;
+        refreshTermuxStatus();
+        if (!termuxBridge.isTermuxInstalled()) {
+            statusText.setText("Status: install Termux first (F-Droid)");
+            return;
+        }
+        if (!hasTermuxRunCommandPermission()) {
+            statusText.setText("Status: grant Termux command permission first");
+            enableTermuxShellTools();
+            return;
+        }
+        statusText.setText("Status: running Termux test command...");
+        hideTermuxSetupPanel();
+        termuxBridge.runTestCommand(new TermuxCommandBridge.Callback() {
+            @Override
+            public void onResult(TermuxCommandBridge.Result result) {
+                runOnUiThread(() -> {
+                    if (result == null) {
+                        statusText.setText("Status: Termux test failed (no result)");
+                        return;
+                    }
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("Status: Termux test exit=").append(result.exitCode);
+                    if (result.timedOut) sb.append(" (timeout)");
+                    if (result.errorMessage != null && !result.errorMessage.isEmpty()) {
+                        sb.append(" err=").append(result.errorMessage);
+                    }
+                    if (result.stdout != null && !result.stdout.trim().isEmpty()) {
+                        String one = result.stdout.trim().replace('\n', ' ');
+                        if (one.length() > 90) one = one.substring(0, 90) + "...";
+                        sb.append(" | ").append(one);
+                    } else if (result.stderr != null && !result.stderr.trim().isEmpty()) {
+                        String one = result.stderr.trim().replace('\n', ' ');
+                        if (one.length() > 90) one = one.substring(0, 90) + "...";
+                        sb.append(" | stderr: ").append(one);
+                    }
+                    statusText.setText(sb.toString());
+                    if (result.exitCode == 0 && !result.timedOut) {
+                        Toast.makeText(MainActivity.this, "Termux command bridge works.", Toast.LENGTH_SHORT).show();
+                        termuxStatusText.setText("Termux: installed, command bridge ready");
+                        hideTermuxSetupPanel();
+                        return;
+                    }
+                    String allErr = ((result.errorMessage == null ? "" : result.errorMessage) + "\n" +
+                        (result.stderr == null ? "" : result.stderr));
+                    if (allErr.contains("allow-external-apps") || allErr.contains("termux.properties")) {
+                        showTermuxExternalAppsInstructions();
+                    }
+                });
+            }
+        });
     }
 
     private static String safeMessage(Exception e) {

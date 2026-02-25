@@ -121,7 +121,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="40dp"
                 android:layout_marginTop="8dp"
-                android:background="@drawable/beos_button_bg"
+                android:background="@drawable/beos_button_bg_pink"
                 android:text="Start Hitomi Overlay"
                 android:textAllCaps="true"
                 android:textColor="#111111" />
@@ -135,6 +135,117 @@
                 android:text="Stop Hitomi Overlay"
                 android:textAllCaps="true"
                 android:textColor="#111111" />
+
+            <TextView
+                android:id="@+id/termuxStatusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:background="#efe7d1"
+                android:padding="6dp"
+                android:text="Termux: checking..."
+                android:textColor="#1f3552"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/termuxOptionalHelpText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:background="#f7f0de"
+                android:padding="6dp"
+                android:text="Optional (superusers): connect Termux so Hitomi can run Linux-like commands on your phone."
+                android:textColor="#5f3b3b"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/termuxInstallButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Install Termux (F-Droid)"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
+
+            <Button
+                android:id="@+id/termuxEnableButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Enable Termux Shell Tools"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
+
+            <Button
+                android:id="@+id/termuxOpenButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Open Termux"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
+
+            <Button
+                android:id="@+id/termuxTestButton"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/beos_button_bg"
+                android:text="Test Termux Command"
+                android:textAllCaps="true"
+                android:textColor="#111111" />
+
+            <LinearLayout
+                android:id="@+id/termuxSetupPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:background="#efe7d1"
+                android:orientation="vertical"
+                android:padding="8dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/termuxSetupHelpText"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="In Termux, run setup command, then fully close and reopen Termux, then tap Test Termux Command."
+                    android:textColor="#1f1f1f"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/termuxSetupCommandText"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:background="#f4f4f4"
+                        android:padding="8dp"
+                        android:textColor="#111111"
+                        android:textIsSelectable="true"
+                        android:textSize="12sp"
+                        android:typeface="monospace" />
+
+                    <Button
+                        android:id="@+id/termuxSetupCopyButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:background="@drawable/beos_button_bg"
+                        android:text="Copy"
+                        android:textAllCaps="false"
+                        android:textColor="#111111" />
+                </LinearLayout>
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/statusText"

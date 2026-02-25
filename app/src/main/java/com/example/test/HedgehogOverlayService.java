@@ -9,6 +9,8 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.drawable.BitmapDrawable;
@@ -69,18 +71,22 @@ public class HedgehogOverlayService extends Service {
     private static final int EDGE_TAB_VISIBLE_SLICE_DP = 10;
     private static final String ANDROID_BROWSER_TOOL_NAME = "android_browser_open";
     private static final String ANDROID_BROWSER_BROWSE_TOOL_NAME = "android_browser_browse";
+    private static final String ANDROID_TERMUX_EXEC_TOOL_NAME = "android_termux_exec";
 
     private WindowManager windowManager;
     private View hedgehogView;
     private View bubbleView;
     private View browserView;
     private TextView edgeTabView;
+    private ParticleLinkView particleLinkView;
     private WindowManager.LayoutParams hedgehogParams;
     private WindowManager.LayoutParams bubbleParams;
     private WindowManager.LayoutParams browserParams;
     private WindowManager.LayoutParams edgeTabParams;
+    private WindowManager.LayoutParams particleLinkParams;
     private boolean bubbleVisible = false;
     private boolean browserVisible = false;
+    private Runnable browserSummonParticlesStop;
     private final ExecutorService chatExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final JSONArray chatHistory = new JSONArray();
@@ -121,6 +127,8 @@ public class HedgehogOverlayService extends Service {
     private int hiddenRestoreX = -1;
     private int hiddenRestoreY = -1;
     private BrowserReadRequest pendingBrowserReadRequest;
+    private TermuxCommandBridge termuxCommandBridge;
+    private float browserReadParticleProgress = 0f;
     private final Runnable sttRestartRunnable = new Runnable() {
         @Override public void run() {
             sttRestartScheduled = false;
@@ -170,6 +178,9 @@ public class HedgehogOverlayService extends Service {
             if (browserView != null) {
                 try { windowManager.removeView(browserView); } catch (Exception ignored) {}
             }
+            if (particleLinkView != null) {
+                try { windowManager.removeView(particleLinkView); } catch (Exception ignored) {}
+            }
             if (edgeTabView != null) {
                 try { windowManager.removeView(edgeTabView); } catch (Exception ignored) {}
             }
@@ -179,6 +190,10 @@ public class HedgehogOverlayService extends Service {
                 hitomiBrowserWebView.stopLoading();
                 hitomiBrowserWebView.destroy();
             } catch (Exception ignored) {}
+        }
+        if (termuxCommandBridge != null) {
+            try { termuxCommandBridge.shutdown(); } catch (Exception ignored) {}
+            termuxCommandBridge = null;
         }
     }
 
@@ -196,6 +211,7 @@ public class HedgehogOverlayService extends Service {
         bubbleView = LayoutInflater.from(this).inflate(R.layout.overlay_bubble, null);
         browserView = LayoutInflater.from(this).inflate(R.layout.overlay_browser, null);
         edgeTabView = buildEdgeTabView();
+        particleLinkView = new ParticleLinkView(this);
 
         hedgehogParams = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -242,6 +258,18 @@ public class HedgehogOverlayService extends Service {
         edgeTabParams.gravity = Gravity.TOP | Gravity.START;
         edgeTabParams.x = 0;
         edgeTabParams.y = hedgehogParams.y;
+        particleLinkParams = new WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        );
+        particleLinkParams.gravity = Gravity.TOP | Gravity.START;
+        particleLinkParams.x = 0;
+        particleLinkParams.y = 0;
 
         setupBubbleUi();
         setupBrowserUi();
@@ -249,14 +277,17 @@ public class HedgehogOverlayService extends Service {
         setupDragAndTap();
 
         windowManager.addView(browserView, browserParams);
+        windowManager.addView(particleLinkView, particleLinkParams);
         windowManager.addView(bubbleView, bubbleParams);
         windowManager.addView(hedgehogView, hedgehogParams);
         windowManager.addView(edgeTabView, edgeTabParams);
+        particleLinkView.setVisibility(View.GONE);
         browserView.setVisibility(View.GONE);
         browserVisible = false;
         bubbleView.setVisibility(View.GONE);
         edgeTabView.setVisibility(View.GONE);
         chatClient = new HitomiCloudChatClient(this);
+        termuxCommandBridge = new TermuxCommandBridge(this);
         initSpeechRecognizer();
         SupabaseAuthManager auth = new SupabaseAuthManager(this);
         if (auth.isSignedIn()) {
@@ -308,29 +339,81 @@ public class HedgehogOverlayService extends Service {
         if (browserView == null || browserParams == null || hitomiBrowserWebView == null) return;
         String url = normalizeBrowserUrl(rawUrl);
         if (url == null || url.isEmpty()) return;
-        positionBrowserNearHedgehog();
+        boolean firstShow = !browserVisible || browserView.getVisibility() != View.VISIBLE;
+        if (firstShow) {
+            positionBrowserNearHedgehog(true);
+        }
         browserVisible = true;
         browserView.setVisibility(View.VISIBLE);
+        if (firstShow) {
+            playBrowserSummonAnimation();
+        }
         safeUpdate(browserView, browserParams);
         if (browserUrlView != null) browserUrlView.setText(url);
         hitomiBrowserWebView.loadUrl(url);
     }
 
-    private void positionBrowserNearHedgehog() {
+    private void positionBrowserNearHedgehog(boolean randomized) {
         if (hedgehogParams == null || browserParams == null) return;
         int screenW = getScreenWidth();
         int screenH = getScreenHeight();
         int browserW = (browserView != null && browserView.getWidth() > 0) ? browserView.getWidth() : dp(240);
         int browserH = (browserView != null && browserView.getHeight() > 0) ? browserView.getHeight() : dp(190);
         int gap = dp(10);
-        int desiredX = hedgehogParams.x + dp(HEDGEHOG_TOUCH_BOX_DP) + gap;
-        if (desiredX + browserW > screenW - dp(8)) {
-            desiredX = hedgehogParams.x - browserW - gap;
+        int[] xCandidates = new int[] {
+            hedgehogParams.x + dp(HEDGEHOG_TOUCH_BOX_DP) + gap,
+            hedgehogParams.x - browserW - gap
+        };
+        int[] yCandidates = new int[] {
+            hedgehogParams.y - dp(24),
+            hedgehogParams.y + dp(8),
+            hedgehogParams.y - browserH + dp(64)
+        };
+        int desiredX = xCandidates[0];
+        int desiredY = yCandidates[0];
+        if (randomized) {
+            int xi = (int) Math.floor(Math.random() * xCandidates.length);
+            int yi = (int) Math.floor(Math.random() * yCandidates.length);
+            desiredX = xCandidates[Math.max(0, Math.min(xCandidates.length - 1, xi))];
+            desiredY = yCandidates[Math.max(0, Math.min(yCandidates.length - 1, yi))];
+        } else {
+            if (desiredX + browserW > screenW - dp(8)) {
+                desiredX = xCandidates[1];
+            }
         }
         desiredX = clamp(desiredX, dp(4), Math.max(dp(4), screenW - browserW - dp(4)));
-        int desiredY = clamp(hedgehogParams.y - dp(24), 0, Math.max(0, screenH - browserH));
+        desiredY = clamp(desiredY, 0, Math.max(0, screenH - browserH));
         browserParams.x = desiredX;
         browserParams.y = desiredY;
+    }
+
+    private void playBrowserSummonAnimation() {
+        if (browserView == null) return;
+        browserView.setAlpha(0f);
+        browserView.setScaleX(0.9f);
+        browserView.setScaleY(0.9f);
+        browserView.animate()
+            .alpha(1f)
+            .scaleX(1f)
+            .scaleY(1f)
+            .setDuration(260L)
+            .start();
+        browserReadParticleProgress = 0.15f;
+        if (particleLinkView != null) {
+            particleLinkView.setVisibility(View.VISIBLE);
+            particleLinkView.setParticleStreamActive(true);
+        }
+        if (browserSummonParticlesStop != null) {
+            mainHandler.removeCallbacks(browserSummonParticlesStop);
+        }
+        browserSummonParticlesStop = () -> {
+            browserSummonParticlesStop = null;
+            if (pendingBrowserReadRequest == null && particleLinkView != null) {
+                particleLinkView.setParticleStreamActive(false);
+                particleLinkView.setVisibility(View.GONE);
+            }
+        };
+        mainHandler.postDelayed(browserSummonParticlesStop, 520L);
     }
 
     private String normalizeBrowserUrl(String rawUrl) {
@@ -356,11 +439,13 @@ public class HedgehogOverlayService extends Service {
             BrowserReadRequest req = pendingBrowserReadRequest;
             if (req == null) return;
             pendingBrowserReadRequest = null;
+            stopBrowserReadParticles();
             req.callback.onSnapshot(null);
         };
         pendingBrowserReadRequest = new BrowserReadRequest(url, callback, timeout);
+        startBrowserReadParticles();
         showHitomiBrowserForUrl(url);
-        mainHandler.postDelayed(timeout, 12000);
+        mainHandler.postDelayed(timeout, 18000);
     }
 
     private void maybeResolvePendingBrowserRead(WebView view, String finishedUrl) {
@@ -369,14 +454,59 @@ public class HedgehogOverlayService extends Service {
         // Resolve on first finished page after request; redirects are fine.
         pendingBrowserReadRequest = null;
         if (req.timeoutRunnable != null) mainHandler.removeCallbacks(req.timeoutRunnable);
+        BrowserReadAccumulator acc = new BrowserReadAccumulator(finishedUrl, req.callback);
+        mainHandler.postDelayed(() -> runBrowserReadStep(view, 0, acc), 450);
+    }
+
+    private void runBrowserReadStep(WebView view, int stepIndex, BrowserReadAccumulator acc) {
+        if (view == null || acc == null) {
+            if (acc != null && acc.callback != null) acc.callback.onSnapshot(null);
+            return;
+        }
         String js = "(function(){try{var t=(document.title||'').trim();var u=(location.href||'').trim();"
             + "var b=(document.body&&document.body.innerText?document.body.innerText:'').replace(/\\s+/g,' ').trim();"
-            + "if(b.length>4000)b=b.slice(0,4000);"
-            + "return JSON.stringify({title:t,url:u,text:b});}catch(e){return JSON.stringify({title:'',url:'',text:''});}})();";
+            + "if(b.length>4200)b=b.slice(0,4200);"
+            + "var y=(window.scrollY||window.pageYOffset||0);"
+            + "var h=(window.innerHeight||document.documentElement.clientHeight||0);"
+            + "var dh=Math.max(document.body?document.body.scrollHeight:0,document.documentElement?document.documentElement.scrollHeight:0);"
+            + "return JSON.stringify({title:t,url:u,text:b,scrollY:y,innerH:h,docH:dh});}"
+            + "catch(e){return JSON.stringify({title:'',url:'',text:'',scrollY:0,innerH:0,docH:0});}})();";
         view.evaluateJavascript(js, value -> {
-            BrowserSnapshot snapshot = parseBrowserSnapshotResult(value, finishedUrl);
-            req.callback.onSnapshot(snapshot);
+            BrowserStepSnapshot step = parseBrowserStepSnapshotResult(value, acc.fallbackUrl);
+            acc.accept(step);
+            updateBrowserReadParticleProgress(step.scrollProgressRatio());
+            boolean more = step.hasMoreScrollableContent();
+            boolean canContinue = stepIndex < 3 && more;
+            if (!canContinue) {
+                stopBrowserReadParticles();
+                acc.callback.onSnapshot(acc.toBrowserSnapshot());
+                return;
+            }
+            int scrollBy = step.recommendedScrollAmountPx();
+            String scrollJs = "(function(){try{window.scrollBy({top:" + scrollBy + ",behavior:'smooth'});}catch(e){try{window.scrollBy(0," + scrollBy + ");}catch(_){}}})();";
+            view.evaluateJavascript(scrollJs, null);
+            mainHandler.postDelayed(() -> runBrowserReadStep(view, stepIndex + 1, acc), 700);
         });
+    }
+
+    private void startBrowserReadParticles() {
+        browserReadParticleProgress = 0f;
+        if (particleLinkView != null) {
+            particleLinkView.setVisibility(View.VISIBLE);
+            particleLinkView.setParticleStreamActive(true);
+        }
+    }
+
+    private void stopBrowserReadParticles() {
+        if (particleLinkView != null) {
+            particleLinkView.setParticleStreamActive(false);
+            particleLinkView.setVisibility(View.GONE);
+        }
+    }
+
+    private void updateBrowserReadParticleProgress(float progress) {
+        browserReadParticleProgress = Math.max(0f, Math.min(1f, progress));
+        if (particleLinkView != null) particleLinkView.invalidate();
     }
 
     private BrowserSnapshot parseBrowserSnapshotResult(String jsValue, String fallbackUrl) {
@@ -391,6 +521,23 @@ public class HedgehogOverlayService extends Service {
             return new BrowserSnapshot(title, url, text);
         } catch (Exception e) {
             return new BrowserSnapshot("", fallbackUrl == null ? "" : fallbackUrl, "");
+        }
+    }
+
+    private BrowserStepSnapshot parseBrowserStepSnapshotResult(String jsValue, String fallbackUrl) {
+        try {
+            String decoded = new JSONArray("[" + (jsValue == null ? "\"\"" : jsValue) + "]").getString(0);
+            JSONObject obj = new JSONObject(decoded);
+            String title = obj.optString("title", "");
+            String url = obj.optString("url", "");
+            String text = obj.optString("text", "");
+            int scrollY = obj.optInt("scrollY", 0);
+            int innerH = obj.optInt("innerH", 0);
+            int docH = obj.optInt("docH", 0);
+            if ((url == null || url.isEmpty()) && fallbackUrl != null) url = fallbackUrl;
+            return new BrowserStepSnapshot(title, url, text, scrollY, innerH, docH);
+        } catch (Exception e) {
+            return new BrowserStepSnapshot("", fallbackUrl == null ? "" : fallbackUrl, "", 0, 0, 0);
         }
     }
 
@@ -488,6 +635,7 @@ public class HedgehogOverlayService extends Service {
             quickSettingsButton.setOnClickListener(v -> {
                 showQuickActions(false);
                 Intent open = new Intent(this, MainActivity.class);
+                open.putExtra(MainActivity.EXTRA_FORCE_SHOW_MAIN, true);
                 open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                 startActivity(open);
             });
@@ -1009,6 +1157,7 @@ public class HedgehogOverlayService extends Service {
 
     private Notification buildNotification() {
         Intent openIntent = new Intent(this, MainActivity.class);
+        openIntent.putExtra(MainActivity.EXTRA_FORCE_SHOW_MAIN, true);
         int flags = PendingIntent.FLAG_UPDATE_CURRENT;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) flags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pending = PendingIntent.getActivity(this, 0, openIntent, flags);
@@ -1096,6 +1245,17 @@ public class HedgehogOverlayService extends Service {
                     mainHandler.post(() -> appendTranscriptLine("Hitomi: " + visibleFollowup));
                 }
             }
+            if (parsedReply.termuxCommand != null && !parsedReply.termuxCommand.isEmpty()) {
+                String followup = runTermuxCommandFollowup(finalUserName, parsedReply.termuxCommand);
+                if (followup != null && !followup.trim().isEmpty()) {
+                    try {
+                        chatHistory.put(new JSONObject().put("role", "assistant").put("content", followup));
+                    } catch (Exception ignored) {
+                    }
+                    final String visibleFollowup = followup.trim();
+                    mainHandler.post(() -> appendTranscriptLine("Hitomi: " + visibleFollowup));
+                }
+            }
             mainHandler.post(() -> {
                 chatInFlight = false;
                 renderTranscript(false);
@@ -1115,10 +1275,11 @@ public class HedgehogOverlayService extends Service {
 
     private ParsedAssistantReply parseAssistantReply(String raw) {
         String source = raw == null ? "" : raw.trim();
-        if (source.isEmpty()) return new ParsedAssistantReply("", null, null);
+        if (source.isEmpty()) return new ParsedAssistantReply("", null, null, null);
         StringBuilder visible = new StringBuilder();
         List<String> browserUrls = new ArrayList<>();
         List<String> browserReadUrls = new ArrayList<>();
+        List<String> termuxCommands = new ArrayList<>();
         int idx = 0;
         while (idx < source.length()) {
             int start = source.indexOf("{{tool:", idx);
@@ -1133,7 +1294,7 @@ public class HedgehogOverlayService extends Service {
                 break;
             }
             String tokenBody = source.substring(start + 2, end).trim();
-            maybeExtractAndroidBrowserTool(tokenBody, browserUrls, browserReadUrls);
+            maybeExtractAndroidTool(tokenBody, browserUrls, browserReadUrls, termuxCommands);
             idx = end + 2;
         }
         String cleaned = visible.toString()
@@ -1146,14 +1307,18 @@ public class HedgehogOverlayService extends Service {
         if (cleaned.isEmpty() && !browserReadUrls.isEmpty()) {
             cleaned = "Opening the Hitomi Browser and reading the page for you.";
         }
+        if (cleaned.isEmpty() && !termuxCommands.isEmpty()) {
+            cleaned = "Running a Termux command for you now.";
+        }
         return new ParsedAssistantReply(
             cleaned,
             browserUrls.isEmpty() ? null : browserUrls.get(0),
-            browserReadUrls.isEmpty() ? null : browserReadUrls.get(0)
+            browserReadUrls.isEmpty() ? null : browserReadUrls.get(0),
+            termuxCommands.isEmpty() ? null : termuxCommands.get(0)
         );
     }
 
-    private void maybeExtractAndroidBrowserTool(String tokenBody, List<String> browserUrls, List<String> browserReadUrls) {
+    private void maybeExtractAndroidTool(String tokenBody, List<String> browserUrls, List<String> browserReadUrls, List<String> termuxCommands) {
         if (tokenBody == null || !tokenBody.startsWith("tool:")) return;
         String payload = tokenBody.substring("tool:".length());
         String[] parts = payload.split("\\|");
@@ -1161,20 +1326,28 @@ public class HedgehogOverlayService extends Service {
         String toolName = parts[0].trim();
         boolean openOnly = ANDROID_BROWSER_TOOL_NAME.equals(toolName);
         boolean browseRead = ANDROID_BROWSER_BROWSE_TOOL_NAME.equals(toolName);
-        if (!openOnly && !browseRead) return;
+        boolean termuxExec = ANDROID_TERMUX_EXEC_TOOL_NAME.equals(toolName);
+        if (!openOnly && !browseRead && !termuxExec) return;
         for (int i = 1; i < parts.length; i++) {
             String part = parts[i];
             int eq = part.indexOf('=');
             if (eq <= 0) continue;
             String key = part.substring(0, eq).trim();
             String val = part.substring(eq + 1).trim();
-            if (!"url".equalsIgnoreCase(key)) continue;
-            String normalized = normalizeBrowserUrl(val);
-            if (normalized != null && !normalized.isEmpty()) {
-                if (browseRead) browserReadUrls.add(normalized);
-                else browserUrls.add(normalized);
+            if (termuxExec) {
+                if (!"cmd".equalsIgnoreCase(key)) continue;
+                String cmd = sanitizeTermuxCommand(val);
+                if (cmd != null && !cmd.isEmpty()) termuxCommands.add(cmd);
+                return;
+            } else {
+                if (!"url".equalsIgnoreCase(key)) continue;
+                String normalized = normalizeBrowserUrl(val);
+                if (normalized != null && !normalized.isEmpty()) {
+                    if (browseRead) browserReadUrls.add(normalized);
+                    else browserUrls.add(normalized);
+                }
+                return;
             }
-            return;
         }
     }
 
@@ -1202,6 +1375,118 @@ public class HedgehogOverlayService extends Service {
         }
     }
 
+    private String runTermuxCommandFollowup(String userName, String command) {
+        try {
+            String trimmed = command == null ? "" : command.trim();
+            if (trimmed.isEmpty()) {
+                return "I tried to run a Termux command, but the command was empty.";
+            }
+            String blockedReason = getBlockedTermuxCommandReason(trimmed);
+            if (blockedReason != null) {
+                String toolResult = "[ANDROID_TERMUX_SHELL]\n"
+                    + "Hitomi tried to use a Termux shell command, but Android safety rules blocked it.\n"
+                    + "Command: " + trimmed + "\n"
+                    + "Reason: " + blockedReason + "\n"
+                    + "[/ANDROID_TERMUX_SHELL]\n"
+                    + "Tell the user briefly what was blocked and suggest a safer command or ask them to run it manually in Termux.";
+                try {
+                    chatHistory.put(new JSONObject().put("role", "user").put("content", toolResult));
+                } catch (Exception ignored) {
+                }
+                return chatClient.send(chatHistory, userName);
+            }
+            if (termuxCommandBridge == null) {
+                termuxCommandBridge = new TermuxCommandBridge(this);
+            }
+            if (termuxCommandBridge == null || !termuxCommandBridge.isTermuxInstalled()) {
+                return "I can use Termux shell tools here, but Termux is not installed yet. Please install Termux and Termux:API first, then tap Enable Termux Shell Tools.";
+            }
+            CountDownLatch latch = new CountDownLatch(1);
+            final TermuxCommandBridge.Result[] holder = new TermuxCommandBridge.Result[1];
+            termuxCommandBridge.runCommand(
+                "/data/data/com.termux/files/usr/bin/sh",
+                new String[]{"-lc", trimmed},
+                null,
+                result -> {
+                    holder[0] = result;
+                    latch.countDown();
+                }
+            );
+            latch.await(18, TimeUnit.SECONDS);
+            TermuxCommandBridge.Result result = holder[0];
+            if (result == null) {
+                return "I tried a Termux command, but I did not get a result back in time.";
+            }
+            String setupFallback = buildTermuxSetupFallbackIfNeeded(result);
+            if (setupFallback != null) {
+                return setupFallback;
+            }
+            String toolResult = buildTermuxToolResult(trimmed, result);
+            try {
+                chatHistory.put(new JSONObject().put("role", "user").put("content", toolResult));
+            } catch (Exception ignored) {
+            }
+            return chatClient.send(chatHistory, userName);
+        } catch (Exception e) {
+            return "I hit a snag running a Termux command: " + safeMessage(e);
+        }
+    }
+
+    private String buildTermuxSetupFallbackIfNeeded(TermuxCommandBridge.Result result) {
+        if (result == null) return null;
+        String errMsg = result.errorMessage == null ? "" : result.errorMessage;
+        String stderr = result.stderr == null ? "" : result.stderr;
+        String combined = (errMsg + "\n" + stderr).toLowerCase();
+        boolean needsExternalAppsSetup =
+            combined.contains("allow-external-apps")
+                || combined.contains("termux.properties")
+                || combined.contains("runcommandservice requires");
+        if (!needsExternalAppsSetup) return null;
+        return "I can run Termux commands here, fren, but Termux still needs one setup step. "
+            + "In the app, tap Enable Termux Shell Tools, tap Open Termux, run the setup command shown in the code box, "
+            + "then fully close and reopen Termux and tap Test Termux Command again.";
+    }
+
+    private String buildTermuxToolResult(String command, TermuxCommandBridge.Result result) {
+        String stdout = result.stdout == null ? "" : result.stdout.trim();
+        String stderr = result.stderr == null ? "" : result.stderr.trim();
+        String errMsg = result.errorMessage == null ? "" : result.errorMessage.trim();
+        if (stdout.length() > 2400) stdout = stdout.substring(0, 2400);
+        if (stderr.length() > 1200) stderr = stderr.substring(0, 1200);
+        if (errMsg.length() > 400) errMsg = errMsg.substring(0, 400);
+        return "[ANDROID_TERMUX_SHELL]\n"
+            + "Hitomi used Termux to run a Linux-like command inside her Android app.\n"
+            + "Command: " + command + "\n"
+            + "Exit code: " + result.exitCode + "\n"
+            + (result.timedOut ? "Timed out: true\n" : "")
+            + (errMsg.isEmpty() ? "" : "Error message: " + errMsg + "\n")
+            + "STDOUT:\n" + (stdout.isEmpty() ? "(empty)" : stdout) + "\n"
+            + "STDERR:\n" + (stderr.isEmpty() ? "(empty)" : stderr) + "\n"
+            + "[/ANDROID_TERMUX_SHELL]\n"
+            + "Use the shell result to answer the user briefly and honestly.";
+    }
+
+    private String getBlockedTermuxCommandReason(String command) {
+        String c = command == null ? "" : command.trim().toLowerCase();
+        if (c.isEmpty()) return "empty command";
+        if (c.contains("rm -rf") || c.contains("rm -fr")) return "destructive deletion is blocked";
+        if (c.startsWith("su") || c.startsWith("sudo") || c.contains(" sudo ")) return "privilege escalation is blocked";
+        if (c.startsWith("reboot") || c.startsWith("shutdown")) return "device power commands are blocked";
+        if (c.startsWith("kill ") || c.startsWith("pkill ") || c.contains(" killall ")) return "process-kill commands are blocked";
+        if (c.contains("apt install") || c.contains("pkg install") || c.contains("apt upgrade") || c.contains("pkg upgrade"))
+            return "package installs/upgrades require explicit user action";
+        if (c.contains("> /dev/block") || c.contains("dd if=") || c.contains("mkfs")) return "disk/device modification commands are blocked";
+        return null;
+    }
+
+    private String sanitizeTermuxCommand(String raw) {
+        if (raw == null) return null;
+        String cmd = raw.trim();
+        if (cmd.isEmpty()) return null;
+        if (cmd.length() > 240) cmd = cmd.substring(0, 240);
+        return cmd;
+    }
+
     private String buildBrowserSnapshotToolResult(BrowserSnapshot snapshot) {
         String title = snapshot.title == null ? "" : snapshot.title.trim();
         String url = snapshot.url == null ? "" : snapshot.url.trim();
@@ -1220,12 +1505,14 @@ public class HedgehogOverlayService extends Service {
         final String visibleText;
         final String browserUrl;
         final String browserReadUrl;
-        ParsedAssistantReply(String visibleText, String browserUrl, String browserReadUrl) {
+        final String termuxCommand;
+        ParsedAssistantReply(String visibleText, String browserUrl, String browserReadUrl, String termuxCommand) {
             this.visibleText = (visibleText == null || visibleText.trim().isEmpty())
                 ? "Okay."
                 : visibleText.trim();
             this.browserUrl = browserUrl;
             this.browserReadUrl = browserReadUrl;
+            this.termuxCommand = termuxCommand;
         }
     }
 
@@ -1252,6 +1539,153 @@ public class HedgehogOverlayService extends Service {
             this.title = title == null ? "" : title;
             this.url = url == null ? "" : url;
             this.text = text == null ? "" : text;
+        }
+    }
+
+    private static final class BrowserStepSnapshot {
+        final String title;
+        final String url;
+        final String text;
+        final int scrollY;
+        final int innerH;
+        final int docH;
+
+        BrowserStepSnapshot(String title, String url, String text, int scrollY, int innerH, int docH) {
+            this.title = title == null ? "" : title;
+            this.url = url == null ? "" : url;
+            this.text = text == null ? "" : text;
+            this.scrollY = Math.max(0, scrollY);
+            this.innerH = Math.max(0, innerH);
+            this.docH = Math.max(0, docH);
+        }
+
+        boolean hasMoreScrollableContent() {
+            if (innerH <= 0 || docH <= 0) return false;
+            return (scrollY + innerH + 24) < docH;
+        }
+
+        int recommendedScrollAmountPx() {
+            if (innerH <= 0) return 480;
+            return Math.max(180, (int) (innerH * 0.78f));
+        }
+
+        float scrollProgressRatio() {
+            int denom = Math.max(1, docH - innerH);
+            return Math.max(0f, Math.min(1f, scrollY / (float) denom));
+        }
+    }
+
+    private static final class BrowserReadAccumulator {
+        final String fallbackUrl;
+        final BrowserReadCallback callback;
+        String title = "";
+        String url = "";
+        final StringBuilder text = new StringBuilder();
+
+        BrowserReadAccumulator(String fallbackUrl, BrowserReadCallback callback) {
+            this.fallbackUrl = fallbackUrl == null ? "" : fallbackUrl;
+            this.callback = callback;
+        }
+
+        void accept(BrowserStepSnapshot step) {
+            if (step == null) return;
+            if (!step.title.isEmpty()) this.title = step.title;
+            if (!step.url.isEmpty()) this.url = step.url;
+            appendChunk(step.text);
+        }
+
+        private void appendChunk(String chunk) {
+            if (chunk == null) return;
+            String c = chunk.trim();
+            if (c.isEmpty()) return;
+            String current = text.toString();
+            if (current.contains(c)) return;
+            if (!current.isEmpty()) text.append("\n\n");
+            text.append(c);
+            if (text.length() > 9000) {
+                text.setLength(9000);
+            }
+        }
+
+        BrowserSnapshot toBrowserSnapshot() {
+            String finalUrl = (url == null || url.isEmpty()) ? fallbackUrl : url;
+            return new BrowserSnapshot(title, finalUrl, text.toString());
+        }
+    }
+
+    private final class ParticleLinkView extends View {
+        private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint dotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private boolean streamActive = false;
+        private float phase = 0f;
+        private final Runnable ticker = new Runnable() {
+            @Override public void run() {
+                if (!streamActive) return;
+                phase += 0.11f;
+                invalidate();
+                mainHandler.postDelayed(this, 33);
+            }
+        };
+
+        ParticleLinkView(Context context) {
+            super(context);
+            setClickable(false);
+            setFocusable(false);
+            linePaint.setStyle(Paint.Style.STROKE);
+            linePaint.setStrokeCap(Paint.Cap.ROUND);
+            linePaint.setStrokeWidth(dp(2));
+            linePaint.setColor(0x88DCCBFF);
+            dotPaint.setStyle(Paint.Style.FILL);
+        }
+
+        void setParticleStreamActive(boolean active) {
+            if (streamActive == active) return;
+            streamActive = active;
+            mainHandler.removeCallbacks(ticker);
+            if (active) {
+                phase = 0f;
+                invalidate();
+                mainHandler.post(ticker);
+            } else {
+                invalidate();
+            }
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!streamActive || hedgehogParams == null || browserParams == null || !browserVisible) return;
+
+            int box = dp(HEDGEHOG_TOUCH_BOX_DP);
+            float hx = hedgehogParams.x + box * 0.22f;
+            float hy = hedgehogParams.y + box * 0.46f;
+
+            int bw = (browserView != null && browserView.getWidth() > 0) ? browserView.getWidth() : dp(240);
+            int bh = (browserView != null && browserView.getHeight() > 0) ? browserView.getHeight() : dp(190);
+            float bx = browserParams.x + bw * 0.08f;
+            float topY = browserParams.y + dp(24);
+            float bottomY = browserParams.y + bh - dp(20);
+            float by = bottomY - (bottomY - topY) * browserReadParticleProgress;
+
+            canvas.drawLine(hx, hy, bx, by, linePaint);
+
+            final int dotCount = 13;
+            for (int i = 0; i < dotCount; i++) {
+                float t = (i / (float) (dotCount - 1) + phase) % 1f;
+                float x = hx + (bx - hx) * t;
+                float y = hy + (by - hy) * t;
+                float centerWeight = 1f - Math.abs(0.5f - t) * 2f;
+                float alpha = 0.35f + 0.65f * centerWeight;
+                int a = Math.max(0, Math.min(255, (int) (alpha * 255f)));
+                float warmMix = 1f - t;
+                int rC = (int) (0xD9 * (1f - warmMix) + 0xFF * warmMix);
+                int gC = (int) (0xF7 * (1f - warmMix) + 0xE7 * warmMix);
+                int bC = (int) (0xFF * (1f - warmMix) + 0xA8 * warmMix);
+                dotPaint.setColor((a << 24) | (rC << 16) | (gC << 8) | bC);
+                float pulse = 0.5f + 0.5f * (float) Math.sin((t * 6.28318f) + (phase * 2.7f));
+                float r = dp(2) + dp(2) * pulse;
+                canvas.drawCircle(x, y, r, dotPaint);
+            }
         }
     }
 
