@@ -1,0 +1,1 @@
+f7c1449203356c165aa4e9fc4b26c308540b53d8a8258c0d17a40ccb3eba4017  releases/0.0.2/agent1c-hitomi-android-v0.0.2-debug.apk

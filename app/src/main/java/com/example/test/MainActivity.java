@@ -12,6 +12,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import java.util.ArrayList;
@@ -19,6 +20,8 @@ import java.util.Arrays;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
+    public static final String EXTRA_REQUEST_MIC_PERMISSION = "request_mic_permission";
+    private static final int REQ_RECORD_AUDIO = 4201;
     private TextView statusText;
     private TextView authStatusText;
     private TextView loginHintText;
@@ -45,6 +48,7 @@ public class MainActivity extends AppCompatActivity {
         stopOverlayButton = findViewById(R.id.stopOverlayButton);
 
         handleAuthIntent(getIntent());
+        maybeHandlePermissionIntent(getIntent());
 
         loginButton.setOnClickListener(v -> openWebAuth());
         signOutButton.setOnClickListener(v -> {
@@ -89,6 +93,7 @@ public class MainActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         handleAuthIntent(intent);
+        maybeHandlePermissionIntent(intent);
     }
 
     @Override
@@ -107,6 +112,37 @@ public class MainActivity extends AppCompatActivity {
                 Uri.parse("package:" + getPackageName())
             );
             startActivity(intent);
+        }
+    }
+
+    private void maybeHandlePermissionIntent(Intent intent) {
+        if (intent == null) return;
+        if (intent.getBooleanExtra(EXTRA_REQUEST_MIC_PERMISSION, false)) {
+            intent.removeExtra(EXTRA_REQUEST_MIC_PERMISSION);
+            requestMicPermission();
+        }
+    }
+
+    private void requestMicPermission() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED) {
+            statusText.setText("Status: microphone permission granted");
+            return;
+        }
+        ActivityCompat.requestPermissions(this, new String[]{ android.Manifest.permission.RECORD_AUDIO }, REQ_RECORD_AUDIO);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_RECORD_AUDIO) return;
+        boolean granted = grantResults != null && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+        if (granted) {
+            statusText.setText("Status: microphone permission granted");
+            Toast.makeText(this, "Microphone enabled for Hitomi.", Toast.LENGTH_SHORT).show();
+        } else {
+            statusText.setText("Status: microphone permission denied");
+            Toast.makeText(this, "Microphone permission is required for always listening.", Toast.LENGTH_SHORT).show();
         }
     }
 

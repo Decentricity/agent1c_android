@@ -1,5 +1,6 @@
 package ai.agent1c.hitomi;
 
+import android.Manifest;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -7,8 +8,12 @@ import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -20,14 +25,20 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowManager;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.os.Bundle;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -42,15 +53,21 @@ public class HedgehogOverlayService extends Service {
     private static final int NOTIF_ID = 1017;
     private static final int HEDGEHOG_SIZE_DP = 112;
     private static final int HEDGEHOG_TOUCH_BOX_DP = 124;
+    private static final int QUICK_ACTION_X_COMPENSATE_DP = 24;
     private static final int BUBBLE_WIDTH_DP = 260;
     private static final int BUBBLE_X_OFFSET_DP = 74;
     private static final int BUBBLE_GAP_DP = 8;
+    private static final int EDGE_TAB_WIDTH_DP = 56;
+    private static final int EDGE_TAB_HEIGHT_DP = 112;
+    private static final int EDGE_TAB_VISIBLE_SLICE_DP = 10;
 
     private WindowManager windowManager;
     private View hedgehogView;
     private View bubbleView;
+    private TextView edgeTabView;
     private WindowManager.LayoutParams hedgehogParams;
     private WindowManager.LayoutParams bubbleParams;
+    private WindowManager.LayoutParams edgeTabParams;
     private boolean bubbleVisible = false;
     private final ExecutorService chatExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -66,8 +83,35 @@ public class HedgehogOverlayService extends Service {
     private String transcript = "";
     private boolean keyboardLiftActive = false;
     private int keyboardLiftOriginalY = -1;
+    private boolean hedgehogDragging = false;
     private ValueAnimator hedgehogHopAnimator;
+    private ValueAnimator hedgehogTravelAnimator;
     private boolean bubbleTailOnTop = false;
+    private View quickActionsView;
+    private ImageButton quickSettingsButton;
+    private ImageButton quickMicButton;
+    private ImageButton quickCloseButton;
+    private ImageButton pinnedMicButton;
+    private boolean quickActionsVisible = false;
+    private boolean alwaysListeningEnabled = false;
+    private SpeechRecognizer speechRecognizer;
+    private Intent speechIntent;
+    private boolean sttListening = false;
+    private boolean sttRestartScheduled = false;
+    private boolean sttRecognizerAvailable = false;
+    private boolean sttPendingRestartAfterReply = false;
+    private boolean sttSuppressUntilNextSession = false;
+    private String sttPartialPreview = "";
+    private boolean hedgehogHiddenAtEdge = false;
+    private boolean hiddenEdgeRight = false;
+    private int hiddenRestoreX = -1;
+    private int hiddenRestoreY = -1;
+    private final Runnable sttRestartRunnable = new Runnable() {
+        @Override public void run() {
+            sttRestartScheduled = false;
+            if (alwaysListeningEnabled && !chatInFlight) startSpeechListeningSession();
+        }
+    };
     private static volatile boolean overlayRunning = false;
 
     public static boolean isOverlayRunning() {
@@ -99,6 +143,7 @@ public class HedgehogOverlayService extends Service {
     public void onDestroy() {
         super.onDestroy();
         overlayRunning = false;
+        stopSpeechLoop(true);
         chatExecutor.shutdownNow();
         if (windowManager != null) {
             if (hedgehogView != null) {
@@ -106,6 +151,9 @@ public class HedgehogOverlayService extends Service {
             }
             if (bubbleView != null) {
                 try { windowManager.removeView(bubbleView); } catch (Exception ignored) {}
+            }
+            if (edgeTabView != null) {
+                try { windowManager.removeView(edgeTabView); } catch (Exception ignored) {}
             }
         }
     }
@@ -122,6 +170,7 @@ public class HedgehogOverlayService extends Service {
 
         hedgehogView = LayoutInflater.from(this).inflate(R.layout.overlay_hedgehog, null);
         bubbleView = LayoutInflater.from(this).inflate(R.layout.overlay_bubble, null);
+        edgeTabView = buildEdgeTabView();
 
         hedgehogParams = new WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -146,14 +195,28 @@ public class HedgehogOverlayService extends Service {
         bubbleParams.gravity = Gravity.TOP | Gravity.START;
         bubbleParams.x = dp(82);
         bubbleParams.y = dp(80);
+        edgeTabParams = new WindowManager.LayoutParams(
+            dp(EDGE_TAB_WIDTH_DP),
+            dp(EDGE_TAB_HEIGHT_DP),
+            overlayType,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        );
+        edgeTabParams.gravity = Gravity.TOP | Gravity.START;
+        edgeTabParams.x = 0;
+        edgeTabParams.y = hedgehogParams.y;
 
         setupBubbleUi();
+        setupQuickActionsUi();
         setupDragAndTap();
 
         windowManager.addView(bubbleView, bubbleParams);
         windowManager.addView(hedgehogView, hedgehogParams);
+        windowManager.addView(edgeTabView, edgeTabParams);
         bubbleView.setVisibility(View.GONE);
+        edgeTabView.setVisibility(View.GONE);
         chatClient = new HitomiCloudChatClient(this);
+        initSpeechRecognizer();
         SupabaseAuthManager auth = new SupabaseAuthManager(this);
         if (auth.isSignedIn()) {
             String display = String.valueOf(auth.getDisplayName() == null ? "" : auth.getDisplayName()).trim();
@@ -166,6 +229,22 @@ public class HedgehogOverlayService extends Service {
             transcript = "Hitomi: Hi! I'm Hitomi, your tiny hedgehog friend. Sign in in the app, then we can chat here.";
         }
         renderTranscript(false);
+    }
+
+    private TextView buildEdgeTabView() {
+        TextView v = new TextView(this);
+        v.setText("");
+        v.setGravity(Gravity.CENTER);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.OVAL);
+        bg.setColor(0xEEF4EFCB);
+        bg.setStroke(dp(1), 0x887A775D);
+        v.setBackground(bg);
+        v.setClickable(true);
+        v.setFocusable(false);
+        v.setAlpha(0.95f);
+        v.setOnClickListener(x -> restoreHedgehogFromEdge());
+        return v;
     }
 
     private void setupBubbleUi() {
@@ -196,6 +275,10 @@ public class HedgehogOverlayService extends Service {
         bubbleInputView.setOnClickListener(v -> scheduleKeyboardAvoidanceHop());
         bubbleView.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
             if (!bubbleVisible || bubbleInputView == null || !bubbleInputView.hasFocus()) return;
+            if (hedgehogDragging) {
+                scheduleKeyboardAvoidanceHop();
+                return;
+            }
             int screenH = getScreenHeight();
             int keyboardTop = getKeyboardTop(screenH);
             if (keyboardTop < screenH - dp(40)) {
@@ -204,35 +287,381 @@ public class HedgehogOverlayService extends Service {
         });
     }
 
+    private void setupQuickActionsUi() {
+        quickActionsView = hedgehogView.findViewById(R.id.hedgehogQuickActions);
+        quickSettingsButton = hedgehogView.findViewById(R.id.hedgehogActionSettings);
+        quickMicButton = hedgehogView.findViewById(R.id.hedgehogActionMic);
+        quickCloseButton = hedgehogView.findViewById(R.id.hedgehogActionClose);
+        pinnedMicButton = hedgehogView.findViewById(R.id.hedgehogPinnedMic);
+        if (quickSettingsButton != null) {
+            quickSettingsButton.setOnClickListener(v -> {
+                showQuickActions(false);
+                Intent open = new Intent(this, MainActivity.class);
+                open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                startActivity(open);
+            });
+        }
+        if (quickMicButton != null) {
+            quickMicButton.setOnClickListener(v -> {
+                toggleAlwaysListeningFromQuickAction();
+            });
+            updateQuickMicVisual();
+        }
+        if (pinnedMicButton != null) {
+            pinnedMicButton.setOnClickListener(v -> toggleAlwaysListeningFromQuickAction());
+        }
+        if (quickCloseButton != null) {
+            quickCloseButton.setOnClickListener(v -> {
+                showQuickActions(false);
+                toggleBubble(false);
+                hideHedgehogToEdge();
+            });
+        }
+        if (quickActionsView != null) {
+            quickActionsView.bringToFront();
+        }
+        updateQuickMicVisual();
+    }
+
+    private void updateQuickMicVisual() {
+        if (quickMicButton != null) {
+            quickMicButton.setColorFilter(alwaysListeningEnabled ? 0xFF8E44AD : 0xFF333333);
+            quickMicButton.setAlpha(alwaysListeningEnabled ? 1f : 0.88f);
+        }
+        if (pinnedMicButton != null) {
+            pinnedMicButton.setColorFilter(alwaysListeningEnabled ? 0xFF8E44AD : 0xFF333333);
+            pinnedMicButton.setAlpha(alwaysListeningEnabled ? 1f : 0.92f);
+        }
+        updatePinnedMicVisibility();
+        updateHideActionIcon();
+    }
+
+    private void updatePinnedMicVisibility() {
+        if (pinnedMicButton == null) return;
+        boolean show = alwaysListeningEnabled && !quickActionsVisible && !hedgehogHiddenAtEdge;
+        pinnedMicButton.setVisibility(show ? View.VISIBLE : View.GONE);
+    }
+
+    private void updateHideActionIcon() {
+        if (quickCloseButton == null || hedgehogParams == null) return;
+        boolean right = isHedgehogCloserToRightEdge();
+        hiddenEdgeRight = right;
+        quickCloseButton.setImageResource(right
+            ? android.R.drawable.ic_media_ff
+            : android.R.drawable.ic_media_rew);
+        quickCloseButton.setContentDescription(right ? "Hide to right edge" : "Hide to left edge");
+    }
+
+    private boolean isHedgehogCloserToRightEdge() {
+        int centerX = hedgehogParams.x + (dp(HEDGEHOG_TOUCH_BOX_DP) / 2);
+        return centerX >= (getScreenWidth() / 2);
+    }
+
+    private void toggleAlwaysListeningFromQuickAction() {
+        showQuickActions(false);
+        if (!alwaysListeningEnabled) {
+            if (!ensureMicPermission()) {
+                Toast.makeText(this, "Allow microphone permission in Hitomi app first.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (!sttRecognizerAvailable) {
+                Toast.makeText(this, "Speech recognition is unavailable on this device.", Toast.LENGTH_SHORT).show();
+                return;
+            }
+        }
+        alwaysListeningEnabled = !alwaysListeningEnabled;
+        updateQuickMicVisual();
+        if (alwaysListeningEnabled) {
+            sttSuppressUntilNextSession = false;
+            scheduleSpeechRestart(40);
+            Toast.makeText(this, "Always listening enabled", Toast.LENGTH_SHORT).show();
+        } else {
+            stopSpeechLoop(false);
+            Toast.makeText(this, "Always listening disabled", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private boolean ensureMicPermission() {
+        boolean granted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            == PackageManager.PERMISSION_GRANTED;
+        if (granted) return true;
+        Intent open = new Intent(this, MainActivity.class);
+        open.putExtra(MainActivity.EXTRA_REQUEST_MIC_PERMISSION, true);
+        open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        startActivity(open);
+        return false;
+    }
+
+    private void initSpeechRecognizer() {
+        if (speechRecognizer != null) return;
+        try {
+            sttRecognizerAvailable = SpeechRecognizer.isRecognitionAvailable(this);
+            if (!sttRecognizerAvailable) return;
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+            speechIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+            speechIntent.putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false);
+            speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                @Override public void onReadyForSpeech(Bundle params) {
+                    sttListening = true;
+                    sttPartialPreview = "";
+                    renderTranscript(chatInFlight);
+                }
+                @Override public void onBeginningOfSpeech() {}
+                @Override public void onRmsChanged(float rmsdB) {}
+                @Override public void onBufferReceived(byte[] buffer) {}
+                @Override public void onEndOfSpeech() {
+                    sttListening = false;
+                }
+                @Override public void onError(int error) {
+                    sttListening = false;
+                    sttPartialPreview = "";
+                    renderTranscript(chatInFlight);
+                    if (!alwaysListeningEnabled) return;
+                    if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) {
+                        scheduleSpeechRestart(420);
+                        return;
+                    }
+                    if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                        scheduleSpeechRestart(180);
+                        return;
+                    }
+                    scheduleSpeechRestart(500);
+                }
+                @Override public void onResults(Bundle results) {
+                    sttListening = false;
+                    sttPartialPreview = "";
+                    handleSpeechResults(results, true);
+                }
+                @Override public void onPartialResults(Bundle partialResults) {
+                    if (partialResults == null) return;
+                    java.util.ArrayList<String> matches = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                    if (matches == null || matches.isEmpty()) return;
+                    String partial = String.valueOf(matches.get(0)).trim();
+                    if (partial.isEmpty()) return;
+                    sttPartialPreview = "Listening: " + partial;
+                    renderTranscript(chatInFlight);
+                }
+                @Override public void onEvent(int eventType, Bundle params) {}
+            });
+        } catch (Exception ignored) {
+            sttRecognizerAvailable = false;
+            speechRecognizer = null;
+        }
+    }
+
+    private void handleSpeechResults(Bundle results, boolean autoSend) {
+        if (results == null) {
+            if (alwaysListeningEnabled && !chatInFlight) scheduleSpeechRestart(180);
+            return;
+        }
+        java.util.ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (matches == null || matches.isEmpty()) {
+            if (alwaysListeningEnabled && !chatInFlight) scheduleSpeechRestart(180);
+            return;
+        }
+        String spoken = String.valueOf(matches.get(0)).trim();
+        if (spoken.isEmpty()) {
+            if (alwaysListeningEnabled && !chatInFlight) scheduleSpeechRestart(180);
+            return;
+        }
+        if (chatInFlight) {
+            sttPendingRestartAfterReply = true;
+            scheduleSpeechRestart(420);
+            return;
+        }
+        if (!bubbleVisible) toggleBubble(true);
+        if (bubbleInputView != null) bubbleInputView.setText(spoken);
+        if (autoSend) {
+            sttPendingRestartAfterReply = alwaysListeningEnabled;
+            sendChatMessage();
+        } else if (alwaysListeningEnabled) {
+            scheduleSpeechRestart(220);
+        }
+    }
+
+    private void startSpeechListeningSession() {
+        if (!alwaysListeningEnabled) return;
+        if (chatInFlight) return;
+        if (!ensureMicPermission()) return;
+        if (!sttRecognizerAvailable || speechRecognizer == null || speechIntent == null) {
+            if (speechRecognizer == null) initSpeechRecognizer();
+            if (!sttRecognizerAvailable || speechRecognizer == null || speechIntent == null) return;
+        }
+        if (sttListening) return;
+        if (sttSuppressUntilNextSession) {
+            sttSuppressUntilNextSession = false;
+        }
+        try {
+            speechRecognizer.cancel();
+        } catch (Exception ignored) {}
+        try {
+            speechRecognizer.startListening(speechIntent);
+        } catch (Exception ignored) {
+            scheduleSpeechRestart(500);
+        }
+    }
+
+    private void scheduleSpeechRestart(long delayMs) {
+        if (!alwaysListeningEnabled) return;
+        mainHandler.removeCallbacks(sttRestartRunnable);
+        sttRestartScheduled = true;
+        mainHandler.postDelayed(sttRestartRunnable, Math.max(40L, delayMs));
+    }
+
+    private void stopSpeechLoop(boolean destroyRecognizer) {
+        mainHandler.removeCallbacks(sttRestartRunnable);
+        sttRestartScheduled = false;
+        sttListening = false;
+        sttPartialPreview = "";
+        try {
+            if (speechRecognizer != null) speechRecognizer.cancel();
+        } catch (Exception ignored) {}
+        if (destroyRecognizer) {
+            try {
+                if (speechRecognizer != null) speechRecognizer.destroy();
+            } catch (Exception ignored) {}
+            speechRecognizer = null;
+        }
+        renderTranscript(chatInFlight);
+    }
+
+    private void showQuickActions(boolean show) {
+        if (quickActionsVisible == show) return;
+        if (quickActionsView == null) return;
+        quickActionsVisible = show;
+        int compensate = dp(QUICK_ACTION_X_COMPENSATE_DP);
+        if (show) {
+            hedgehogParams.x = clamp(
+                hedgehogParams.x - compensate,
+                0,
+                Math.max(0, getScreenWidth() - dp(HEDGEHOG_TOUCH_BOX_DP))
+            );
+        } else {
+            hedgehogParams.x = clamp(
+                hedgehogParams.x + compensate,
+                0,
+                Math.max(0, getScreenWidth() - dp(HEDGEHOG_TOUCH_BOX_DP))
+            );
+        }
+        positionBubbleNearHedgehog();
+        safeUpdate(hedgehogView, hedgehogParams);
+        if (bubbleVisible) safeUpdate(bubbleView, bubbleParams);
+        if (show) {
+            updateHideActionIcon();
+            quickActionsView.bringToFront();
+            quickActionsView.setVisibility(View.VISIBLE);
+            View[] buttons = new View[]{ quickSettingsButton, quickMicButton, quickCloseButton };
+            for (int i = 0; i < buttons.length; i++) {
+                View btn = buttons[i];
+                if (btn == null) continue;
+                btn.animate().cancel();
+                btn.setAlpha(0f);
+                btn.setScaleX(0.7f);
+                btn.setScaleY(0.7f);
+                btn.setTranslationX(dp(8));
+                btn.animate()
+                    .alpha(1f)
+                    .scaleX(1f)
+                    .scaleY(1f)
+                    .translationX(0f)
+                    .setStartDelay(i * 22L)
+                    .setDuration(130)
+                    .start();
+            }
+            return;
+        }
+        View[] buttons = new View[]{ quickSettingsButton, quickMicButton, quickCloseButton };
+        for (View btn : buttons) {
+            if (btn == null) continue;
+            btn.animate().cancel();
+            btn.animate()
+                .alpha(0f)
+                .scaleX(0.75f)
+                .scaleY(0.75f)
+                .translationX(dp(6))
+                .setDuration(90)
+                .start();
+        }
+        quickActionsView.postDelayed(() -> {
+            if (!quickActionsVisible && quickActionsView != null) {
+                quickActionsView.setVisibility(View.GONE);
+                for (View btn : buttons) {
+                    if (btn == null) continue;
+                    btn.setAlpha(1f);
+                    btn.setScaleX(1f);
+                    btn.setScaleY(1f);
+                    btn.setTranslationX(0f);
+                }
+            }
+        }, 100);
+    }
+
     private void setupDragAndTap() {
         final float[] downRaw = new float[2];
         final int[] downPos = new int[2];
         final boolean[] dragging = new boolean[1];
+        final boolean[] longPressed = new boolean[1];
+        final Runnable[] longPressTrigger = new Runnable[1];
+        View touchTarget = hedgehogView.findViewById(R.id.hedgehogImage);
+        if (touchTarget == null) touchTarget = hedgehogView;
+        final View finalTouchTarget = touchTarget;
 
-        hedgehogView.setOnTouchListener((v, event) -> {
+        finalTouchTarget.setOnTouchListener((v, event) -> {
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN:
+                    if (!isOpaqueTouchOnHedgehog(v, event)) {
+                        return false;
+                    }
                     dragging[0] = false;
+                    hedgehogDragging = false;
+                    longPressed[0] = false;
                     downRaw[0] = event.getRawX();
                     downRaw[1] = event.getRawY();
                     downPos[0] = hedgehogParams.x;
                     downPos[1] = hedgehogParams.y;
+                    if (hedgehogHiddenAtEdge) return false;
+                    if (longPressTrigger[0] != null) mainHandler.removeCallbacks(longPressTrigger[0]);
+                    longPressTrigger[0] = () -> {
+                        if (!dragging[0]) {
+                            longPressed[0] = true;
+                            showQuickActions(!quickActionsVisible);
+                        }
+                    };
+                    mainHandler.postDelayed(longPressTrigger[0], 420);
                     return true;
                 case MotionEvent.ACTION_MOVE:
                     int dx = (int) (event.getRawX() - downRaw[0]);
                     int dy = (int) (event.getRawY() - downRaw[1]);
-                    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) dragging[0] = true;
-                    if (keyboardLiftActive) {
-                        keyboardLiftOriginalY = downPos[1] + dy;
+                    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) {
+                        dragging[0] = true;
+                        hedgehogDragging = true;
+                        if (longPressTrigger[0] != null) mainHandler.removeCallbacks(longPressTrigger[0]);
+                        if (quickActionsVisible) showQuickActions(false);
                     }
                     hedgehogParams.x = clamp(downPos[0] + dx, 0, Math.max(0, getScreenWidth() - dp(HEDGEHOG_TOUCH_BOX_DP)));
                     hedgehogParams.y = clamp(downPos[1] + dy, 0, Math.max(0, getScreenHeight() - dp(HEDGEHOG_TOUCH_BOX_DP)));
                     positionBubbleNearHedgehog();
                     safeUpdate(hedgehogView, hedgehogParams);
+                    positionEdgeTabForHiddenState();
                     if (bubbleVisible) safeUpdate(bubbleView, bubbleParams);
                     return true;
                 case MotionEvent.ACTION_UP:
-                    if (!dragging[0]) toggleBubble(!bubbleVisible);
+                    if (longPressTrigger[0] != null) mainHandler.removeCallbacks(longPressTrigger[0]);
+                    hedgehogDragging = false;
+                    if (longPressed[0]) return true;
+                    if (!dragging[0]) {
+                        if (quickActionsVisible) showQuickActions(false);
+                        else toggleBubble(!bubbleVisible);
+                    } else if (bubbleVisible && bubbleInputView != null && bubbleInputView.hasFocus()) {
+                        scheduleKeyboardAvoidanceHop();
+                    }
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    if (longPressTrigger[0] != null) mainHandler.removeCallbacks(longPressTrigger[0]);
+                    hedgehogDragging = false;
                     return true;
                 default:
                     return false;
@@ -240,10 +669,49 @@ public class HedgehogOverlayService extends Service {
         });
     }
 
+    private boolean isOpaqueTouchOnHedgehog(View v, MotionEvent event) {
+        if (!(v instanceof ImageView)) return true;
+        ImageView image = (ImageView) v;
+        Drawable drawable = image.getDrawable();
+        if (!(drawable instanceof BitmapDrawable)) return true;
+        BitmapDrawable bd = (BitmapDrawable) drawable;
+        if (bd.getBitmap() == null) return true;
+        android.graphics.Bitmap bmp = bd.getBitmap();
+        if (bmp.getWidth() <= 0 || bmp.getHeight() <= 0) return true;
+
+        float touchX = event.getX();
+        float touchY = event.getY();
+        int vw = image.getWidth();
+        int vh = image.getHeight();
+        int dw = drawable.getIntrinsicWidth();
+        int dh = drawable.getIntrinsicHeight();
+        if (vw <= 0 || vh <= 0 || dw <= 0 || dh <= 0) return true;
+
+        float scale = Math.min((float) vw / (float) dw, (float) vh / (float) dh);
+        float renderedW = dw * scale;
+        float renderedH = dh * scale;
+        float left = (vw - renderedW) / 2f;
+        float top = (vh - renderedH) / 2f;
+        if (touchX < left || touchY < top || touchX > left + renderedW || touchY > top + renderedH) {
+            return false;
+        }
+        float normX = (touchX - left) / renderedW;
+        float normY = (touchY - top) / renderedH;
+        int px = Math.max(0, Math.min(bmp.getWidth() - 1, (int) (normX * bmp.getWidth())));
+        int py = Math.max(0, Math.min(bmp.getHeight() - 1, (int) (normY * bmp.getHeight())));
+        int alpha = (bmp.getPixel(px, py) >>> 24) & 0xFF;
+        return alpha >= 24;
+    }
+
     private void toggleBubble(boolean show) {
+        if (hedgehogHiddenAtEdge && show) {
+            restoreHedgehogFromEdge();
+            return;
+        }
         bubbleVisible = show;
         if (bubbleView == null) return;
         if (show) {
+            showQuickActions(false);
             positionBubbleNearHedgehog();
             safeUpdate(bubbleView, bubbleParams);
             bubbleView.setVisibility(View.VISIBLE);
@@ -258,22 +726,52 @@ public class HedgehogOverlayService extends Service {
             bubbleView.setVisibility(View.GONE);
             restoreFromKeyboardHop(true);
         }
+        updatePinnedMicVisibility();
     }
 
     private void positionBubbleNearHedgehog() {
+        if (hedgehogHiddenAtEdge) return;
         int bubbleWidth = dp(BUBBLE_WIDTH_DP);
         int bubbleX = hedgehogParams.x - dp(BUBBLE_X_OFFSET_DP);
         int bubbleHeight = getBubbleMeasuredHeight();
+        int screenH = getScreenHeight();
+        int keyboardTop = getKeyboardTop(screenH);
+        int imeBottom = getImeBottomInset();
         int hedgehogCenterY = hedgehogParams.y + (dp(HEDGEHOG_TOUCH_BOX_DP) / 2);
-        boolean placeBelow = hedgehogCenterY < Math.round(getScreenHeight() * 0.4f);
+        boolean placeBelow = hedgehogCenterY < Math.round(screenH * 0.4f);
+        if (imeBottom > 0 && placeBelow) {
+            int belowBottom = hedgehogParams.y + dp(HEDGEHOG_TOUCH_BOX_DP) + dp(BUBBLE_GAP_DP) + bubbleHeight;
+            if (belowBottom > keyboardTop - dp(6)) {
+                placeBelow = false;
+            }
+        }
         int bubbleY = placeBelow
             ? hedgehogParams.y + dp(HEDGEHOG_TOUCH_BOX_DP) + dp(BUBBLE_GAP_DP)
             : hedgehogParams.y - bubbleHeight - dp(BUBBLE_GAP_DP);
         bubbleTailOnTop = placeBelow;
         updateBubbleTailPlacement();
         bubbleParams.x = clamp(bubbleX, 0, Math.max(0, getScreenWidth() - bubbleWidth));
-        bubbleParams.y = clamp(bubbleY, 0, Math.max(0, getScreenHeight() - bubbleHeight));
+        int bottomMax = Math.max(0, screenH - bubbleHeight);
+        if (imeBottom > 0 && keyboardTop < screenH - dp(40)) {
+            bottomMax = Math.max(0, Math.min(bottomMax, keyboardTop - bubbleHeight - dp(6)));
+        }
+        bubbleParams.y = clamp(bubbleY, 0, bottomMax);
         positionBubbleTailTowardHedgehog();
+    }
+
+    private void positionEdgeTabForHiddenState() {
+        if (edgeTabView == null || edgeTabParams == null || hedgehogParams == null) return;
+        int tabW = dp(EDGE_TAB_WIDTH_DP);
+        int tabH = dp(EDGE_TAB_HEIGHT_DP);
+        int visibleSlice = dp(EDGE_TAB_VISIBLE_SLICE_DP);
+        edgeTabParams.y = clamp(
+            hedgehogParams.y + (dp(HEDGEHOG_TOUCH_BOX_DP) - tabH) / 2,
+            0,
+            Math.max(0, getScreenHeight() - tabH)
+        );
+        edgeTabParams.x = hiddenEdgeRight
+            ? (getScreenWidth() - visibleSlice)
+            : -(tabW - visibleSlice);
     }
 
     private void updateBubbleTailPlacement() {
@@ -388,6 +886,10 @@ public class HedgehogOverlayService extends Service {
                 chatInFlight = false;
                 renderTranscript(false);
                 if (bubbleSendButton != null) bubbleSendButton.setEnabled(true);
+                if (alwaysListeningEnabled && sttPendingRestartAfterReply) {
+                    sttPendingRestartAfterReply = false;
+                    scheduleSpeechRestart(200);
+                }
             });
         });
     }
@@ -400,6 +902,14 @@ public class HedgehogOverlayService extends Service {
     private void renderTranscript(boolean thinking) {
         if (bubbleBodyView == null) return;
         String text = transcript == null ? "" : transcript;
+        if (alwaysListeningEnabled) {
+            text = text + (text.isEmpty() ? "" : "\n\n") + "Listening...";
+            if (sttPartialPreview != null && !sttPartialPreview.isEmpty()) {
+                text = text + "\n" + sttPartialPreview;
+            }
+        } else if (sttPartialPreview != null && !sttPartialPreview.isEmpty()) {
+            text = text + (text.isEmpty() ? "" : "\n\n") + sttPartialPreview;
+        }
         if (thinking) text = text + "\n\nThinking...";
         bubbleBodyView.setText(text);
         if (bubbleBodyScrollView != null) {
@@ -414,8 +924,18 @@ public class HedgehogOverlayService extends Service {
 
     private void ensureKeyboardAvoidanceHop() {
         if (hedgehogView == null || hedgehogParams == null) return;
+        if (hedgehogDragging) {
+            mainHandler.postDelayed(this::ensureKeyboardAvoidanceHop, 120);
+            return;
+        }
         int screenH = getScreenHeight();
         int keyboardTopEstimate = getKeyboardTop(screenH);
+        if (keyboardTopEstimate >= screenH - dp(40)) return;
+        if (bubbleVisible) {
+            // Re-evaluate placement first (can flip below->above when keyboard is open).
+            positionBubbleNearHedgehog();
+            safeUpdate(bubbleView, bubbleParams);
+        }
         int hedgehogBottom = hedgehogParams.y + dp(HEDGEHOG_TOUCH_BOX_DP);
         int overlayBottom = hedgehogBottom;
         if (bubbleVisible && bubbleView != null) {
@@ -424,9 +944,9 @@ public class HedgehogOverlayService extends Service {
             overlayBottom = Math.max(overlayBottom, bubbleBottom);
         }
         if (overlayBottom <= keyboardTopEstimate) return;
-        int liftPx = overlayBottom - keyboardTopEstimate + dp(8);
+        int liftPx = overlayBottom - keyboardTopEstimate + dp(14);
         if (bubbleVisible && bubbleTailOnTop) {
-            liftPx += Math.round(screenH * 0.05f);
+            liftPx += Math.round(screenH * 0.06f);
         }
         int targetY = clamp(hedgehogParams.y - liftPx, 0, Math.max(0, screenH - dp(HEDGEHOG_TOUCH_BOX_DP)));
         if (!keyboardLiftActive) {
@@ -439,14 +959,8 @@ public class HedgehogOverlayService extends Service {
     private int getKeyboardTop(int screenH) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
-                View insetSource = bubbleView != null ? bubbleView : hedgehogView;
-                if (insetSource != null) {
-                    WindowInsets insets = insetSource.getRootWindowInsets();
-                    if (insets != null) {
-                        int imeBottom = insets.getInsets(WindowInsets.Type.ime()).bottom;
-                        if (imeBottom > 0) return screenH - imeBottom;
-                    }
-                }
+                int imeBottom = getImeBottomInset();
+                if (imeBottom > 0) return screenH - imeBottom;
             } catch (Exception ignored) {
             }
         }
@@ -462,6 +976,19 @@ public class HedgehogOverlayService extends Service {
         } catch (Exception ignored) {
         }
         return screenH - dp(270);
+    }
+
+    private int getImeBottomInset() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return 0;
+        try {
+            View insetSource = bubbleView != null ? bubbleView : hedgehogView;
+            if (insetSource == null) return 0;
+            WindowInsets insets = insetSource.getRootWindowInsets();
+            if (insets == null) return 0;
+            return insets.getInsets(WindowInsets.Type.ime()).bottom;
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 
     private void restoreFromKeyboardHop(boolean animated) {
@@ -496,6 +1023,91 @@ public class HedgehogOverlayService extends Service {
             if (bubbleVisible) safeUpdate(bubbleView, bubbleParams);
         });
         hedgehogHopAnimator.start();
+    }
+
+    private void animateHedgehogTravelTo(int targetX, int targetY, @Nullable Runnable onEnd) {
+        animateHedgehogTravelTo(targetX, targetY, false, onEnd);
+    }
+
+    private void animateHedgehogTravelTo(int targetX, int targetY, boolean allowOffscreenX, @Nullable Runnable onEnd) {
+        if (hedgehogView == null || hedgehogParams == null) {
+            if (onEnd != null) onEnd.run();
+            return;
+        }
+        if (hedgehogTravelAnimator != null) hedgehogTravelAnimator.cancel();
+        int startX = hedgehogParams.x;
+        int startY = hedgehogParams.y;
+        if (startX == targetX && startY == targetY) {
+            if (onEnd != null) onEnd.run();
+            return;
+        }
+        final int dx = targetX - startX;
+        final int dy = targetY - startY;
+        final float distance = (float) Math.hypot(dx, dy);
+        final float arcAmp = dp(Math.max(18, Math.min(42, Math.round(distance / 10f))));
+        hedgehogTravelAnimator = ValueAnimator.ofFloat(0f, 1f);
+        hedgehogTravelAnimator.setDuration(Math.max(180L, Math.min(420L, 170L + (long) (distance * 0.7f))));
+        hedgehogTravelAnimator.addUpdateListener(anim -> {
+            float t = (float) anim.getAnimatedValue();
+            float arc = (float) Math.sin(Math.PI * t) * arcAmp;
+            int nextX = Math.round(startX + (dx * t));
+            hedgehogParams.x = allowOffscreenX
+                ? nextX
+                : clamp(nextX, 0, Math.max(0, getScreenWidth() - dp(HEDGEHOG_TOUCH_BOX_DP)));
+            hedgehogParams.y = clamp(Math.round(startY + (dy * t) - arc), 0, Math.max(0, getScreenHeight() - dp(HEDGEHOG_TOUCH_BOX_DP)));
+            positionBubbleNearHedgehog();
+            safeUpdate(hedgehogView, hedgehogParams);
+            if (bubbleVisible) safeUpdate(bubbleView, bubbleParams);
+        });
+        hedgehogTravelAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+            private boolean cancelled = false;
+            @Override public void onAnimationCancel(android.animation.Animator animation) { cancelled = true; }
+            @Override public void onAnimationEnd(android.animation.Animator animation) {
+                if (!cancelled && onEnd != null) onEnd.run();
+            }
+        });
+        hedgehogTravelAnimator.start();
+    }
+
+    private void hideHedgehogToEdge() {
+        if (hedgehogHiddenAtEdge || hedgehogView == null) return;
+        hiddenRestoreX = hedgehogParams.x;
+        hiddenRestoreY = hedgehogParams.y;
+        hiddenEdgeRight = isHedgehogCloserToRightEdge();
+        updateHideActionIcon();
+        int offscreenX = hiddenEdgeRight ? getScreenWidth() + dp(6) : -(dp(HEDGEHOG_TOUCH_BOX_DP) + dp(6));
+        int targetY = hedgehogParams.y;
+        animateHedgehogTravelTo(offscreenX, targetY, true, () -> {
+            hedgehogHiddenAtEdge = true;
+            if (bubbleVisible) toggleBubble(false);
+            if (quickActionsVisible) showQuickActions(false);
+            if (hedgehogView != null) hedgehogView.setVisibility(View.GONE);
+            positionEdgeTabForHiddenState();
+            if (edgeTabView != null) {
+                edgeTabView.setVisibility(View.VISIBLE);
+                safeUpdate(edgeTabView, edgeTabParams);
+            }
+            updatePinnedMicVisibility();
+        });
+    }
+
+    private void restoreHedgehogFromEdge() {
+        if (!hedgehogHiddenAtEdge || hedgehogView == null) return;
+        if (edgeTabView != null) edgeTabView.setVisibility(View.GONE);
+        int restoreX = hiddenRestoreX >= 0 ? hiddenRestoreX : dp(18);
+        int restoreY = hiddenRestoreY >= 0 ? hiddenRestoreY : dp(220);
+        int offscreenX = hiddenEdgeRight ? getScreenWidth() + dp(6) : -(dp(HEDGEHOG_TOUCH_BOX_DP) + dp(6));
+        hedgehogParams.x = offscreenX;
+        hedgehogParams.y = clamp(restoreY, 0, Math.max(0, getScreenHeight() - dp(HEDGEHOG_TOUCH_BOX_DP)));
+        hedgehogHiddenAtEdge = false;
+        hedgehogView.setVisibility(View.VISIBLE);
+        safeUpdate(hedgehogView, hedgehogParams);
+        animateHedgehogTravelTo(
+            clamp(restoreX, 0, Math.max(0, getScreenWidth() - dp(HEDGEHOG_TOUCH_BOX_DP))),
+            clamp(restoreY, 0, Math.max(0, getScreenHeight() - dp(HEDGEHOG_TOUCH_BOX_DP))),
+            true,
+            this::updatePinnedMicVisibility
+        );
     }
 
     private static String safeMessage(Exception e) {

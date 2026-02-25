@@ -2,7 +2,70 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
-    android:padding="6dp">
+    android:padding="6dp"
+    android:clipChildren="false"
+    android:clipToPadding="false">
+
+    <FrameLayout
+        android:id="@+id/hedgehogQuickActions"
+        android:layout_width="188dp"
+        android:layout_height="172dp"
+        android:layout_gravity="center_vertical|start"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/hedgehogActionSettings"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_gravity="start|top"
+            android:layout_marginStart="18dp"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/overlay_action_button_bg"
+            android:backgroundTint="#FFE27A"
+            android:contentDescription="Settings"
+            android:padding="9dp"
+            android:src="@android:drawable/ic_menu_manage" />
+
+        <ImageButton
+            android:id="@+id/hedgehogActionMic"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_gravity="start|center_vertical"
+            android:layout_marginStart="0dp"
+            android:background="@drawable/overlay_action_button_bg"
+            android:backgroundTint="#BFE9FF"
+            android:contentDescription="Microphone"
+            android:padding="8dp"
+            android:src="@android:drawable/ic_btn_speak_now" />
+
+        <ImageButton
+            android:id="@+id/hedgehogActionClose"
+            android:layout_width="42dp"
+            android:layout_height="42dp"
+            android:layout_gravity="start|bottom"
+            android:layout_marginStart="18dp"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/overlay_action_button_bg"
+            android:backgroundTint="#FF9AA5"
+            android:contentDescription="Close overlay"
+            android:padding="9dp"
+            android:src="@android:drawable/ic_menu_close_clear_cancel" />
+    </FrameLayout>
+
+    <ImageButton
+        android:id="@+id/hedgehogPinnedMic"
+        android:layout_width="42dp"
+        android:layout_height="42dp"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="0dp"
+        android:background="@drawable/overlay_action_button_bg"
+        android:backgroundTint="#BFE9FF"
+        android:contentDescription="Microphone active"
+        android:padding="8dp"
+        android:src="@android:drawable/ic_btn_speak_now"
+        android:visibility="gone" />
 
     <View
         android:layout_width="84dp"

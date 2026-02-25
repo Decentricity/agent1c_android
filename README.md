@@ -12,19 +12,22 @@ Related projects:
 
 ## Download APK (Current)
 
-Release `0.0.1`:
-- Direct APK download: https://github.com/Decentricity/agent1c_android/raw/refs/tags/v0.0.1/releases/0.0.1/agent1c-hitomi-android-v0.0.1-debug.apk
-- `releases/0.0.1/agent1c-hitomi-android-v0.0.1-debug.apk`
-- checksum: `releases/0.0.1/SHA256SUMS.txt`
-- notes: `releases/0.0.1/RELEASE_NOTES.md`
+Release `0.0.2`:
+- Direct APK download: https://github.com/Decentricity/agent1c_android/raw/refs/tags/v0.0.2/releases/0.0.2/agent1c-hitomi-android-v0.0.2-debug.apk
+- `releases/0.0.2/agent1c-hitomi-android-v0.0.2-debug.apk`
+- checksum: `releases/0.0.2/SHA256SUMS.txt`
+- notes: `releases/0.0.2/RELEASE_NOTES.md`
 
-## What 0.0.1 includes
+## What 0.0.2 includes
 
 - Floating Hitomi hedgehog overlay (draggable)
 - Clippy-style chat bubble with tail
 - Supabase login (web-first handoff to app)
 - Cloud chat via Agent1c.ai Supabase/xAI backend
 - Android BeOS/HedgeyOS-inspired main screen styling
+- Long-press radial quick actions (settings, mic, hide-to-edge)
+- Native Android STT always-listening mode
+- Hide-to-edge arc tab restore interaction
 
 ## Notes
 
